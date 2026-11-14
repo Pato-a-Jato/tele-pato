@@ -43,21 +43,14 @@ uint8_t* pTelemetria = (uint8_t*)&telemetria;
 int estadoPacote = -1;  // estado 0
 
 void mostraTele() {
-<<<<<<< HEAD
   // __builtin_bswap16: little endian -> big endian da injepro
-=======
-// __builtin_bswap16: little endian -> big endian da injepro
->>>>>>> a0bb593 (fix CAN struct on tele-pato-firmware)
   uint16_t rpm = __builtin_bswap16(telemetria.rpm);
   float vel = (float)__builtin_bswap16(telemetria.velocidade) / 10.0f;
   float pOleo = (float)((int16_t)__builtin_bswap16(telemetria.pressaoOleo)) / 10.0f;
   float tOleo = (float)((int16_t)__builtin_bswap16(telemetria.tempOleo)) / 10.0f;
 
-<<<<<<< HEAD
-=======
   float tensaoBat = (float)((uint16_t)__builtin_bswap16(telemetria.tensaoBat)) / 10.0f;
 
->>>>>>> a0bb593 (fix CAN struct on tele-pato-firmware)
   float tMotor = (float)((int16_t)__builtin_bswap16(telemetria.tempMotor)) / 10.0f;
   float pComb = (float)((int16_t)__builtin_bswap16(telemetria.pressaoComb)) / 10.0f;
   float tps = (float)__builtin_bswap16(telemetria.tps) / 10.0f;
@@ -69,12 +62,8 @@ void mostraTele() {
 
   float tComb = (float)((int16_t)__builtin_bswap16(telemetria.tempComb)) / 10.0f;
   uint16_t marcha = __builtin_bswap16(telemetria.marcha);
-<<<<<<< HEAD
-=======
   uint16_t erroECU = __builtin_bswap16(telemetria.erroECU);
->>>>>>> a0bb593 (fix CAN struct on tele-pato-firmware)
 
-  //Serial.printf("RPM: %u |RPM: %d | TPS: %.1f%% | TMot: %.0f ºC | TAr: %.0f ºC\n", rpm, tps, tMotor, tAr);
   Serial.printf("RPM: %u | TPS: %5.1f%% | TMot: %5.1f C | TAr: %5.1f C\n", rpm, tps, tMotor, tAr);
 }
 
@@ -87,12 +76,6 @@ void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte* buf) {
   }
   Serial.println();
 }
-
-/*
-void mostraTele() {
-  Serial.printf("RPM: %4.0f | TPS: %5.1f%% | T.Motor: %5.1f C | T.Ar: %5.1f C\n", rpm, tps, tempMotor, tempAr);
-}
-*/
 
 void setup() {
   Serial.begin(115200);
@@ -142,7 +125,7 @@ void loop() {
           estadoPacote = 3;
           break;
         case 3:
-          // Pacote 3 (Bytes 16 a 23): MAP, Temp Ar, Temp Exaustão, Lambda[cite: 3, 5]
+          // Pacote 3 (Bytes 16 a 23): MAP, Temp Ar, Temp Exaustão, Lambda
           // Grava nos últimos 8 bytes da struct (offset 16)
           //mostraFrameCru(3, rxId, len, buf);
           memcpy(pTelemetria + 16, buf, 8);
@@ -151,10 +134,7 @@ void loop() {
         case 4:
           // Pacote 4 (Bytes 24 a 31): Temp Comb, Marcha, Erro ECU, Fixo 1E FC
           //mostraFrameCru(4, rxId, len, buf);
-<<<<<<< HEAD
-=======
           memcpy(pTelemetria + 24, buf, 8);
->>>>>>> a0bb593 (fix CAN struct on tele-pato-firmware)
           estadoPacote = 5;
           break;
         default:
