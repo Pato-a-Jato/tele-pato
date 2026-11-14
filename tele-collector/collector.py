@@ -5,12 +5,13 @@ import os
 import ssl
 import time
 
+from protocol import (decode_packet, PACKET_SIZE, ProtocolError) # arquivo protocol.py
+
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
-
 
 # ============================================================
 # CONFIGURACOES
@@ -56,13 +57,17 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# ARMAZENAMENTO CSV
+
+# ============================================================
+# ARMAZENAMENTO CSV - PJ v1
+# ============================================================
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
 
-CSV_PATH = LOG_DIR / f"telemetry_{date_str}.csv"
+# Novo nome para preservar os CSVs anteriores.
+CSV_PATH = LOG_DIR / f"telemetry_pj_{date_str}.csv"
 
 csv_file = open(
     CSV_PATH,
@@ -76,9 +81,36 @@ fieldnames = [
     "topic",
     "qos",
     "retain",
-    "valid_json_object",
+    "payload_format",
+    "payload_size",
+    "valid",
+
+    "boot_id",
+    "sequence",
+    "timestamp_utc",
+
+    "rpm",
+    "velocidade_kmh",
+    "pressao_oleo_bar",
+    "temp_oleo_c",
+    "temp_motor_c",
+    "pressao_comb_bar",
+    "tensao_bateria_v",
+    "tps_pct",
+    "map_bar",
+    "temp_ar_c",
+    "temp_exaustao_c",
+    "lambda_raw",
+    "temp_comb_c",
+    "marcha",
+    "erro_ecu",
+
+    "marcador_fixo_hex",
+    "marcador_fixo_valido",
+    "can_raw_hex",
+
     "payload_json",
-    "raw_payload",
+    "raw_payload_hex",
     "validation_error"
 ]
 
@@ -90,6 +122,7 @@ csv_writer = csv.DictWriter(
 if CSV_PATH.stat().st_size == 0:
     csv_writer.writeheader()
     csv_file.flush()
+
 
 
 # ============================================================
@@ -135,87 +168,138 @@ def on_subscribe(client, userdata, mid, reason_code_list, properties):
     )
 
 
+
 def on_message(client, userdata, message):
 
     received_at = datetime.now(
         timezone.utc
     ).isoformat(timespec="milliseconds")
 
-    raw_payload = message.payload.decode(
-        "utf-8",
-        errors="replace"
-    )
+    payload = message.payload
 
-    valid = False
-    payload_json = ""
-    validation_error = ""
+    # Estrutura inicial da linha CSV
+    row = {
+        field: "" for field in fieldnames
+    }
 
-    # --------------------------------------------------------
-    # Validacao do JSON
-    # --------------------------------------------------------
-
-    try:
-        decoded = json.loads(raw_payload)
-
-        if isinstance(decoded, dict):
-
-            valid = True
-
-            payload_json = json.dumps(
-                decoded,
-                ensure_ascii=False
-            )
-
-        else:
-            validation_error = (
-                "O payload JSON nao representa um objeto."
-            )
-
-    except json.JSONDecodeError as error:
-
-        validation_error = str(error)
-
-    # --------------------------------------------------------
-    # Registro CSV
-    # --------------------------------------------------------
-
-    csv_writer.writerow({
+    row.update({
         "received_at_utc": received_at,
         "topic": message.topic,
         "qos": message.qos,
         "retain": message.retain,
-        "valid_json_object": valid,
-        "payload_json": payload_json,
-        "raw_payload": raw_payload,
-        "validation_error": validation_error
+        "payload_size": len(payload),
+        "valid": False,
+        "raw_payload_hex": payload.hex(" ").upper()
     })
 
-    csv_file.flush()
+    try:
 
-    # --------------------------------------------------------
-    # Log no terminal
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # PACOTE BINARIO PJ v1
+        # ----------------------------------------------------
 
-    if valid:
+        if (
+            message.topic.endswith("/can")
+            and len(payload) == PACKET_SIZE
+        ):
 
-        logging.info(
-            "Mensagem recebida | Topico: %s | QoS: %d",
-            message.topic,
-            message.qos
-        )
+            decoded = decode_packet(payload)
 
-        logging.info(
-            "Payload: %s",
-            payload_json
-        )
+            can = decoded["can"]
 
-    else:
+            row.update({
+                "payload_format": "PJ_V1_BINARY",
+                "valid": True,
+
+                "boot_id": f"0x{decoded['boot_id']:08X}",
+                "sequence": decoded["sequence"],
+                "timestamp_utc": decoded["timestamp_utc"] or "",
+
+                "rpm": can["rpm"],
+                "velocidade_kmh": can["velocidade_kmh"],
+                "pressao_oleo_bar": can["pressao_oleo_bar"],
+                "temp_oleo_c": can["temp_oleo_c"],
+
+                "temp_motor_c": can["temp_motor_c"],
+                "pressao_comb_bar": can["pressao_comb_bar"],
+                "tensao_bateria_v": can["tensao_bateria_v"],
+                "tps_pct": can["tps_pct"],
+
+                "map_bar": can["map_bar"],
+                "temp_ar_c": can["temp_ar_c"],
+                "temp_exaustao_c": can["temp_exaustao_c"],
+                "lambda_raw": can["lambda_raw"],
+
+                "temp_comb_c": can["temp_comb_c"],
+                "marcha": can["marcha"],
+                "erro_ecu": can["erro_ecu"],
+
+                "marcador_fixo_hex": can["marcador_fixo_hex"],
+                "marcador_fixo_valido": can["marcador_fixo_valido"],
+                "can_raw_hex": can["can_raw_hex"]
+            })
+
+            logging.info(
+                "PJ v1 recebido | Boot: %s | Seq: %d | RPM: %s | TPS: %s",
+                row["boot_id"],
+                row["sequence"],
+                row["rpm"],
+                row["tps_pct"]
+            )
+
+        # ----------------------------------------------------
+        # COMPATIBILIDADE COM MENSAGENS JSON DE TESTE
+        # ----------------------------------------------------
+
+        else:
+
+            raw_text = payload.decode("utf-8")
+
+            decoded_json = json.loads(raw_text)
+
+            if not isinstance(decoded_json, dict):
+                raise ValueError(
+                    "O JSON recebido nao representa um objeto."
+                )
+
+            row.update({
+                "payload_format": "JSON",
+                "valid": True,
+                "payload_json": json.dumps(
+                    decoded_json,
+                    ensure_ascii=False
+                )
+            })
+
+            logging.info(
+                "JSON recebido | Topico: %s",
+                message.topic
+            )
+
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ProtocolError,
+        ValueError
+    ) as error:
+
+        row["payload_format"] = "INVALID"
+        row["valid"] = False
+        row["validation_error"] = str(error)
 
         logging.warning(
             "Mensagem invalida | Topico: %s | Erro: %s",
             message.topic,
-            validation_error
+            error
         )
+
+    # --------------------------------------------------------
+    # PERSISTENCIA
+    # --------------------------------------------------------
+
+    csv_writer.writerow(row)
+    csv_file.flush()
+
 
 
 def on_disconnect(client, userdata, disconnect_flags,

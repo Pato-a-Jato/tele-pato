@@ -100,28 +100,32 @@ def decode_can_data(can_data: bytes) -> dict:
     marcador = can_data[30:32]
 
     return {
+        # --- Pacote 1 (Bytes 0 a 7) ---
         "rpm": rpm,
         "velocidade_kmh": velocidade,
         "pressao_oleo_bar": pressao_oleo,
         "temp_oleo_c": temp_oleo,
 
+        # --- Pacote 2 (Bytes 8 a 15) ---
         "temp_motor_c": temp_motor,
         "pressao_comb_bar": pressao_comb,
         "tensao_bateria_v": tensao_bat,
         "tps_pct": tps,
 
+        # --- Pacote 3 (Bytes 16 a 23) ---
         "map_bar": map_value,
         "temp_ar_c": temp_ar,
         "temp_exaustao_c": temp_exaustao,
         "lambda_raw": lambda_raw,
 
+        # --- Pacote 4 (Bytes 24 a 31) ---
         "temp_comb_c": temp_comb,
         "marcha": marcha,
         "erro_ecu": erro_ecu,
-
         "marcador_fixo_hex": marcador.hex(" ").upper(),
-        "marcador_fixo_valido": marcador == b"\x1E\xFC",
 
+
+        "marcador_fixo_valido": marcador == b"\x1E\xFC",
         "can_raw_hex": can_data.hex(" ").upper()
     }
 
