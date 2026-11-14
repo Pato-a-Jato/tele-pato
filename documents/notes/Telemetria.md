@@ -2,6 +2,14 @@
 O painel (ou microcontrolador) envia comandos para a ECU pelo **ID `0x601`** (ex: `VFE` para ler entradas, `BM` para requisitar canais ativos). A ECU responde no **ID `0x7FB`** com pacotes identificados por cabeçalhos ASCII como `IP` (dados de canais).
 
 A T4000 cospe **5 frames seguidos** a cada $20\text{ ms}$ com intervalo de apenas 0,1ms a 2,5ms entre eles. Cada passagem pelo `loop()` lê **um único frame de 8 bytes** por vez.
+
+**Funcionamento do código:**
+1. **Aguardar** `FB FA`: Descartar os frames recebidos antes do marcador de sincronização.
+2. **Receber frame 1**: Copiar para `can_data[0..7]`.
+3. **Receber frame 2**: Copiar para `can_data[8..15]`.
+4. **Receber frame 3**: Copiar para `can_data[16..23]`.
+5. **Receber frame 4**: Copiar para `can_data[24..31]` e registrar o horário da conclusão da amostra.
+6. **Receber o próximo** `FB FA`: Confirmar o fechamento da sequência anterior e disponibilizar a amostra completa para transmissão. Reiniciar a montagem.
 ### Protocolo AIM
 É um protocolo puramente **broadcast** (unidirecional). A T4000 transmite periodicamente seus dados a cada 10 a 20 em uma sequência contínua de **5 quadros CAN**.
 - **Baud rate:** $1\text{ Mbps}$ (`CAN_1000KBPS`).
