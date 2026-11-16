@@ -3,8 +3,9 @@
 
 #include "tele-can-frame.h"
 #include "protocolo-pj.h"
+#include "secrets.h"
 
-const int SPI_CS_PIN = 5;
+const int SPI_CS_PIN = 12;
 const int SPI_SCK = 18;
 const int SPI_MISO = 19;
 const int SPI_MOSI = 23;
@@ -22,12 +23,9 @@ int estadoPacote = -1;  // estado 0
 // PROTOCOLO PJ V1
 uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
-
 uint32_t sampleUnixSeconds = 0;
 uint16_t sampleMilliseconds = 0;
-
 uint8_t packetBuffer[PJ_V1_PACKET_SIZE];
-
 bool timestampValido = false;
 
 bool obterTimestampUTC(uint32_t* unixSeconds, uint16_t* milliseconds) {
@@ -39,6 +37,7 @@ bool obterTimestampUTC(uint32_t* unixSeconds, uint16_t* milliseconds) {
   if (gettimeofday(&agora, NULL) != 0) {
     return false;
   }
+
 
   // verifica se o relogio foi sincronizado.
   if (agora.tv_sec < 1704067200LL) {
@@ -151,7 +150,6 @@ void setup() {
 
 
 void loop() {
-
   if (CAN0.checkReceive() == CAN_MSGAVAIL) {
 
     unsigned long rxId;
@@ -160,25 +158,21 @@ void loop() {
 
     CAN0.readMsgBuf(&rxId, &len, buf);
 
-    // Aceita somente os quadros da Injepro.
+    // Aceita somente os quadros da Injepro
     if (rxId != CAN_ID_INJEPRO || len != CAN_FRAME_SIZE) {
       return;
     }
 
-    // Verifica o marcador de sincronizacao.
+    // Verifica o marcador de sincronizacao
     if (buf[0] == CAN_SYNC_BYTE_0 && buf[1] == CAN_SYNC_BYTE_1) {
 
-      // Se os quatro quadros foram recebidos,
-      // finaliza a amostra anterior.
+      // Se os quatro quadros foram recebidos finaliza a amostra anterior.
       if (estadoPacote == 5) {
-
         timestampValido = obterTimestampUTC(&sampleUnixSeconds, &sampleMilliseconds);
-
         gerarPacotePJv1();
       }
 
       // Reinicia a maquina de estados.
-      // O proximo quadro sera o pacote 1.
       estadoPacote = 1;
 
       return;

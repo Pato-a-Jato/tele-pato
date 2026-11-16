@@ -1,4 +1,5 @@
 #include "protocolo-pj.h"
+#include <stdlib.h>
 
 void montaPacotePJ(
   uint8_t *dadosCAN,
