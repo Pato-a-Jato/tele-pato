@@ -3,6 +3,12 @@
 **/.venv/
 **/__pycache__/
 
+**/credentials.txt
+**/credentials
+
+**/secrets.h
+**/secrets
+
 **/certs/
 
 **/.obsidian/
