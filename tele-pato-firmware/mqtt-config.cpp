@@ -1,7 +1,8 @@
-#define TINY_GSM_MODEM_A7670
+#define TINY_GSM_MODEM_A76XXSSL
 
 #include <Arduino.h>
-#include <TinyGsmClient.h>  // lembrar da função extra no arquivo TinyGsmMqttA76xx.h -> importar pasta "lib" com alterações
+#include <TinyGsmClient.h>
+#include <PubSubClient.h>
 
 #include "mqtt-config.h"
 #include "emqxsl-ca.h"
@@ -19,7 +20,6 @@
 #define MODEM_RX_PIN 27
 
 #define MODEM_RESET_LEVEL HIGH
-
 #define MODEM_GPS_ENABLE_GPIO -1
 
 #define GSM_PIN ""
@@ -40,22 +40,27 @@ const char *gprsPass = "vivo";
 StreamDebugger debugger(SerialAT, Serial);
 TinyGsm modem(debugger);
 #else
-TinyGsm modem(SerialAT); // objeto modem
+TinyGsm modem(SerialAT);                                           // objeto modem
 #endif
 
-TinyGsmClient client(modem);
+// Objetos de comunicação
+TinyGsmClientSecure client(modem);
+PubSubClient mqtt(client);
 
 // Inicializar Modem e GPRS
 bool inicializarModem() {
-  // setar reset, enable, power pins
+  // setar reset, enabele, power pins
   delay(100);
 
-  // liga alimentação do regulador de tensão do modem
+  /* Set Power control pin output
+    * * @note      Known issues, ESP32 (V1.2) version of T-A7670, T-A7608,
+    *            when using battery power supply mode, BOARD_POWERON_PIN (IO12) must be set to high level after esp32 starts, otherwise a reset will occur.
+    * */
   pinMode(MODEM_POWER_ON_PIN, OUTPUT);
   digitalWrite(MODEM_POWER_ON_PIN, HIGH);
   delay(500);
 
-  // pulso curto no reset de acordo com o datasheet
+  // // Set modem reset pin ,reset modem
   pinMode(MODEM_RESET_PIN, OUTPUT);
   digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
   delay(100);
@@ -80,10 +85,14 @@ bool inicializarModem() {
   SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);  // modem baud rate fixo
 #endif
 
-  delay(6000);
+  Serial.println("Start Modem...");
+  delay(3000);
 
   Serial.println("Inicializando Modem...");
-  modem.init();
+  if (!modem.init()) {
+    Serial.println("ERRO: falha na inicializacao do modem.");
+    return false;
+  }
   //modem.restart(); // evita conexões residuais
 
   String nome = modem.getModemName();
@@ -124,7 +133,7 @@ bool inicializarModem() {
   }
   Serial.println("Conectado no APN!!!");
 
-  if (modem.isGprsConnected()){
+  if (modem.isGprsConnected()) {
     Serial.println("GPRS conectado, pronto para enviar mqtt");
   }
 

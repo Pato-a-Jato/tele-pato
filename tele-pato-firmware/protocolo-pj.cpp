@@ -34,7 +34,7 @@ void montaPacotePJ(
   pacote[13] = (uint8_t)(milissegundos);
 
   // === DADOS CAN - BYTES 14 A 45 === (32 bytes dos 4 frames CAN)
-  // copia os 32 bytes originais da Injepro
+  // 32 bytes originais da Injepro
   for (int i = 0; i < PJ_V1_CAN_SIZE; i++) {
     pacote[PJ_V1_HEADER_SIZE + i] = dadosCAN[i];
   }
