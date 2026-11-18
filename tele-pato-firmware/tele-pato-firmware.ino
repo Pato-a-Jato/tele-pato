@@ -45,12 +45,26 @@ bool timestampValido = false;
 
 void setup() {
   Serial.begin(115200);
-  
-  if (!inicializarModem()){
+
+  if (!inicializarModem()) {
     Serial.println("Deu erro em algo ai");
-    while(true){;}
+    while (true) { ; }
   }
-  Serial.println("Deu boa...");
+  Serial.println("Deu boa... Indo para o envio mqtt teste");
+
+  if (!conectarMQTT()) {
+    Serial.println("Deu bosta ao conectar ao mqtt");
+    while (true) { ; }
+  }
+  Serial.println("Conctou ao servidor MQTT... Enviando pacote teste");
+
+  if (!publicarTesteMQTT()) {
+    Serial.println("Deu merda ao publicar o teste no broker");
+    while (true) { ; }
+  }
+  Serial.println("================= TUDO FILÉ PAPAI ==================");
+  Serial.println("Teste de publicação do binário");
+
 
   bootId = esp_random();
   if (bootId == 0) {
@@ -74,6 +88,8 @@ void setup() {
 
 
 void loop() {
+  processarMQTT();
+
   if (CAN0.checkReceive() == CAN_MSGAVAIL) {
 
     unsigned long rxId;
@@ -143,27 +159,25 @@ void gerarPacotePJv1() {
 
   montaPacotePJ(pTelemetria, bootId, sequenceNumber, sampleUnixSeconds, sampleMilliseconds, packetBuffer);
 
-  Serial.println("\n--- PACOTE PJ v1 ---");
+  if (sequenceNumber == 1) {
 
+    if (publicarMQTTBinario(packetBuffer, PJ_V1_PACKET_SIZE)) {
+      Serial.println("Publicacao PJ v1 confirmada!");
+    } else {
+      Serial.println("Falha na publicacao PJ v1!");
+    }
+  }
+
+  Serial.println("\n--- PACOTE PJ v1 ---");
   Serial.printf("Boot ID: 0x%08lX\n", (unsigned long)bootId);
   Serial.printf("Sequence: %lu\n", (unsigned long)sequenceNumber);
   Serial.printf("Timestamp: %lu.%03u\n", (unsigned long)sampleUnixSeconds, sampleMilliseconds);
   Serial.printf("Timestamp valido: %s\n", timestampValido ? "SIM" : "NAO");
   Serial.printf("Tamanho: %u bytes\n", (unsigned int)PJ_V1_PACKET_SIZE);
-
   Serial.print("PJv1_HEX: ");
-
   for (int i = 0; i < PJ_V1_PACKET_SIZE; i++) {
     Serial.printf("%02X ", packetBuffer[i]);
   }
-
-  // Publica o pacote PJv1 via MQTT
-  //if (publicarMQTTBinario(packetBuffer, PJ_V1_PACKET_SIZE)) {
-  //  Serial.println("Publicacao PJ v1 confirmada!");
-  //} else {
-  //  Serial.println("Falha na publicacao PJ v1!");
-  //}
-
   Serial.println("\n--------------------");
 }
 

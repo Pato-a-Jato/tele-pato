@@ -8,6 +8,10 @@
 #include "emqxsl-ca.h"
 #include "secrets.h"
 
+// ===================== mqtt info ========================
+static uint16_t keepAlive = 60;
+static uint16_t timeout = 30;
+
 // CONFIGURACAO DO MODEM
 #define SerialAT Serial1
 #define TINY_GSM_DEBUG Serial
@@ -46,6 +50,9 @@ TinyGsm modem(SerialAT);                                           // objeto mod
 // Objetos de comunicação
 TinyGsmClientSecure client(modem);
 PubSubClient mqtt(client);
+
+// Nome do arquivo do certificado armazenado no modem
+const char *NOME_CA_CERT = "emqxsl-ca.pem";
 
 // Inicializar Modem e GPRS
 bool inicializarModem() {
@@ -91,6 +98,8 @@ bool inicializarModem() {
   Serial.println("Inicializando Modem...");
   if (!modem.init()) {
     Serial.println("ERRO: falha na inicializacao do modem.");
+    // TRATAR AQUI !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
     return false;
   }
   //modem.restart(); // evita conexões residuais
@@ -124,17 +133,17 @@ bool inicializarModem() {
   }
 
   // Conexão GPRS
-  Serial.print(F("Conctando a:"));
+  Serial.println("Tentando conectar ao apn: ");
   Serial.print(apn);
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
     Serial.println("Erro ao conectar no apn");
     delay(10000);
     return false;
   }
-  Serial.println("Conectado no APN!!!");
+  Serial.println("Conectado ao APN!!!");
 
   if (modem.isGprsConnected()) {
-    Serial.println("GPRS conectado, pronto para enviar mqtt");
+    Serial.println("==== GPRS conectado, pronto para enviar os dados via mqtt ===");
   }
 
   return true;
@@ -147,23 +156,33 @@ bool conectarMQTT() {
   Serial.println(" INICIALIZANDO MQTT");
   Serial.println("================================");
 
-  if (!modem.mqtt_begin(true, true)) {
-    Serial.println("ERRO: nao foi possivel iniciar MQTT.");
+  // remove uma copia anterior do certificado, se existir
+  modem.deleteCertificate(NOME_CA_CERT);
+
+  // transfere o certificado PEM para o armazenamento do modem.
+  Serial.println("Armazenando certificado CA no modem...");
+  if (!modem.downloadCertificate(NOME_CA_CERT, EMQX_CA_CERT)) {
+    Serial.println("ERRO: falha ao armazenar certificado CA");
+    return false;
+  }
+  Serial.println("Certificado CA armazenado!");
+
+  // associa o arquivo ao cliente SSL
+  if (!client.setCertificate(NOME_CA_CERT)) {
+    Serial.println("ERRO: falha ao configurar certificado SSL");
     return false;
   }
 
-  Serial.println("Servico MQTT iniciado.");
-
-  modem.mqtt_set_certificate(EMQX_CA_CERT);
-
-  Serial.println("Certificado CA configurado.");
+  mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setKeepAlive(keepAlive);
+  mqtt.setSocketTimeout(timeout);
 
   Serial.println("Conectando ao EMQX Cloud...");
 
-  bool conectado = modem.mqtt_connect(MQTT_CLIENT_INDEX, MQTT_HOST, MQTT_PORT, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD, 60);
+  if(!mqtt.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)){
+    Serial.print("ERRO: conexão MQTT falhou. Estado: ");
+    Serial.println(mqtt.state());
 
-  if (!conectado) {
-    Serial.println("ERRO: conexao MQTT falhou.");
     return false;
   }
 
@@ -175,14 +194,14 @@ bool conectarMQTT() {
 // PUBLICACAO DE TESTE
 bool publicarTesteMQTT() {
 
-  const char mensagem[] = "PATO_A_JATO_MQTT_TESTE";
+  const char mensagem[] = "PATO_A_JATO_MQTT_TESTE_NOVO";
 
   Serial.println("\nPublicando mensagem de teste...");
 
-  bool enviado = modem.mqtt_publish(MQTT_CLIENT_INDEX, MQTT_TOPIC, mensagem, 0, 60, 0);
+  bool enviado = mqtt.publish(MQTT_TOPIC, mensagem);
 
   if (!enviado) {
-    Serial.println("ERRO: falha ao publicar.");
+    Serial.println("ERRO: falha ao publicar");
     return false;
   }
 
@@ -193,9 +212,15 @@ bool publicarTesteMQTT() {
 
 // Publica um binário via MQTT -> espectificar conteúdoo e tamanho do binaŕio
 bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho) {
+  
   // Verifica os parametros
   if (payload == NULL || tamanho == 0) {
-    Serial.println("ERRO: payload binario invalido.");
+    Serial.println("ERRO: payload binario invalido");
+    return false;
+  }
+
+  if(!mqtt.connected()){
+    Serial.println("ERRO: cliente MQTT desconectado");
     return false;
   }
 
@@ -211,18 +236,18 @@ bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho) {
 
   // Publica o buffer binario
   // mqtt_publish_binary(client_index, topic, payload, tamanho, QoS, timeout, retain)
-  bool resultado = modem.mqtt_publish_binary(MQTT_CLIENT_INDEX, MQTT_TOPIC_TELEMETRIA, payload, tamanho, 0, 60, 0);
+  bool resultado = mqtt.publish(MQTT_TOPIC_TELEMETRIA, payload, (unsigned int)tamanho, false);
   if (!resultado) {
-    Serial.println("ERRO: falha ao publicar pacote binario.");
+    Serial.println("ERRO: falha ao publicar pacote binario");
     return false;
   }
 
-  Serial.println("Pacote binario enviado ao modem!");
+  Serial.println("Pacote PJ v2 publicado!");
 
   return true;
 }
 
 // PROCESSAMENTO MQTT
 void processarMQTT() {
-  modem.mqtt_handle(20);
+  mqtt.loop();
 }
