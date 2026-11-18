@@ -20,13 +20,10 @@ uint8_t* pTelemetria = (uint8_t*)&telemetria;
 
 int estadoPacote = -1;  // estado 0
 
-// PROTOCOLO PJ V1
+// PROTOCOLO PJ V2
 uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
-uint32_t sampleUnixSeconds = 0;
-uint16_t sampleMilliseconds = 0;
-uint8_t packetBuffer[PJ_V1_PACKET_SIZE];
-bool timestampValido = false;
+uint8_t packetBuffer[PJ_V2_PACKET_SIZE];
 
 // MODEM CONFIG
 #define SerialAT Serial1
@@ -45,6 +42,8 @@ bool timestampValido = false;
 
 void setup() {
   Serial.begin(115200);
+
+  // Inicilizar Modem -> Modem Info,Name... -> SIM Status -> Esperar Rede LTE (Conectar na antena) -> Conectar e pedir IP ao APN
 
   if (!inicializarModem()) {
     Serial.println("Deu erro em algo ai");
@@ -65,13 +64,10 @@ void setup() {
   Serial.println("================= TUDO FILÉ PAPAI ==================");
   Serial.println("Teste de publicação do binário");
 
-
   bootId = esp_random();
   if (bootId == 0) {
     bootId = 1;
   }
-
-  // Inicilizar Modem -> Modem Info,Name... -> SIM Status -> Esperar Rede LTE (Conectar na antena) -> Conectar e pedir IP ao APN
 
   Serial.printf("PJ v1 - Boot ID: 0x%08lX\n", (unsigned long)bootId);
 
@@ -85,7 +81,6 @@ void setup() {
   CAN0.setMode(MCP_NORMAL);
   Serial.println("MCP2515 pronto! Lendo dados da CAN...");
 }
-
 
 void loop() {
   processarMQTT();
@@ -108,7 +103,7 @@ void loop() {
 
       // Se os quatro quadros foram recebidos finaliza a amostra anterior.
       if (estadoPacote == 5) {
-        gerarPacotePJv1();
+        gerarPacotePJv2();
       }
 
       // Reinicia a maquina de estados.
@@ -152,33 +147,50 @@ void loop() {
 }
 
 // ======================= funcoeos ===============================
-
-void gerarPacotePJv1() {
-
+void gerarPacotePJv2() {
   sequenceNumber++;
 
-  montaPacotePJ(pTelemetria, bootId, sequenceNumber, sampleUnixSeconds, sampleMilliseconds, packetBuffer);
+  montaPacotePJ(bootId, sequenceNumber, pTelemetria, packetBuffer);
 
-  if (sequenceNumber == 1) {
 
-    if (publicarMQTTBinario(packetBuffer, PJ_V1_PACKET_SIZE)) {
-      Serial.println("Publicacao PJ v1 confirmada!");
-    } else {
-      Serial.println("Falha na publicacao PJ v1!");
-    }
-  }
+  Serial.println("\n--- PACOTE PJ v2 ---");
 
-  Serial.println("\n--- PACOTE PJ v1 ---");
   Serial.printf("Boot ID: 0x%08lX\n", (unsigned long)bootId);
   Serial.printf("Sequence: %lu\n", (unsigned long)sequenceNumber);
-  Serial.printf("Timestamp: %lu.%03u\n", (unsigned long)sampleUnixSeconds, sampleMilliseconds);
-  Serial.printf("Timestamp valido: %s\n", timestampValido ? "SIM" : "NAO");
-  Serial.printf("Tamanho: %u bytes\n", (unsigned int)PJ_V1_PACKET_SIZE);
-  Serial.print("PJv1_HEX: ");
-  for (int i = 0; i < PJ_V1_PACKET_SIZE; i++) {
+  Serial.printf("Tamanho: %u bytes\n", (unsigned int)PJ_V2_PACKET_SIZE);
+
+  Serial.print("PJv2_HEX: ");
+
+  for (uint16_t i = 0; i < PJ_V2_PACKET_SIZE; i++) {
     Serial.printf("%02X ", packetBuffer[i]);
   }
-  Serial.println("\n--------------------");
+  Serial.println();
+
+  // Controle da frequencia de publicacao
+  static uint32_t ultima_publicacao_ms = 0;
+
+  uint32_t agora = millis();
+
+  if ((ultima_publicacao_ms == 0) || (uint32_t)(agora - ultima_publicacao_ms) >= MQTT_PUBLISH_INTERVAL_MS) {
+    Serial.println("Publicando telemetria...");
+
+    uint32_t inicio_publicacao = millis();
+    uint32_t duracao_publicacao = millis() - inicio_publicacao;
+
+    bool enviado = publicarMQTTBinario(packetBuffer, PJ_V2_PACKET_SIZE);
+
+    // Atualiza o instante da ultima tentativa
+    ultima_publicacao_ms = millis();
+
+    if (enviado) {
+      Serial.println("Pacote PJ v2 publicado!");
+    } else {
+      Serial.println("Falha na publicacao PJ v2!");
+    }
+
+    Serial.printf("Tempo de publicacao: %lu ms\n", (unsigned long)duracao_publicacao);
+  }
+  Serial.println("--------------------");
 }
 
 // Função para debug
