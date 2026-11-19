@@ -3,9 +3,9 @@
 
 #include "tele-can-frame.h"
 #include "protocolo-pj.h"
-#include "secrets.h"
+#include "mqtt-config.h"
 
-const int SPI_CS_PIN = 12;
+const int SPI_CS_PIN = 13;
 const int SPI_SCK = 18;
 const int SPI_MISO = 19;
 const int SPI_MOSI = 23;
@@ -20,117 +20,51 @@ uint8_t* pTelemetria = (uint8_t*)&telemetria;
 
 int estadoPacote = -1;  // estado 0
 
-// PROTOCOLO PJ V1
+// PROTOCOLO PJ V2
 uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
-uint32_t sampleUnixSeconds = 0;
-uint16_t sampleMilliseconds = 0;
-uint8_t packetBuffer[PJ_V1_PACKET_SIZE];
-bool timestampValido = false;
+uint8_t packetBuffer[PJ_V2_PACKET_SIZE];
 
-bool obterTimestampUTC(uint32_t* unixSeconds, uint16_t* milliseconds) {
-  struct timeval agora;
+// MODEM CONFIG
+#define SerialAT Serial1
+#define TINY_GSM_DEBUG Serial
 
-  *unixSeconds = 0;
-  *milliseconds = 0;
+//#define MODEM_BAUD 115200
+#define MODEM_BAUD 28800
 
-  if (gettimeofday(&agora, NULL) != 0) {
-    return false;
-  }
-
-
-  // verifica se o relogio foi sincronizado.
-  if (agora.tv_sec < 1704067200LL) {
-    return false;
-  }
-
-  *unixSeconds = (uint32_t)agora.tv_sec;
-
-  *milliseconds = (uint16_t)(agora.tv_usec / 1000);
-
-  return true;
-}
-
-void gerarPacotePJv1() {
-
-  sequenceNumber++;
-
-  montaPacotePJ(pTelemetria, bootId, sequenceNumber, sampleUnixSeconds, sampleMilliseconds, packetBuffer);
-
-  Serial.println("\n--- PACOTE PJ v1 ---");
-
-  Serial.printf(
-    "Boot ID: 0x%08lX\n",
-    (unsigned long)bootId);
-
-  Serial.printf(
-    "Sequence: %lu\n",
-    (unsigned long)sequenceNumber);
-
-  Serial.printf(
-    "Timestamp: %lu.%03u\n",
-    (unsigned long)sampleUnixSeconds,
-    sampleMilliseconds);
-
-  Serial.printf(
-    "Timestamp valido: %s\n",
-    timestampValido ? "SIM" : "NAO");
-
-  Serial.printf(
-    "Tamanho: %u bytes\n",
-    (unsigned int)PJ_V1_PACKET_SIZE);
-
-  Serial.print("PJv1_HEX: ");
-
-  for (int i = 0; i < PJ_V1_PACKET_SIZE; i++) {
-    Serial.printf("%02X ", packetBuffer[i]);
-  }
-
-  Serial.println("\n--------------------");
-}
-
-// Função para debug
-void mostraTele() {
-  // __builtin_bswap16: little endian -> big endian da injepro
-  uint16_t rpm = __builtin_bswap16(telemetria.rpm);
-  float vel = (float)__builtin_bswap16(telemetria.velocidade) / 10.0f;
-  float pOleo = (float)((int16_t)__builtin_bswap16(telemetria.pressaoOleo)) / 10.0f;
-  float tOleo = (float)((int16_t)__builtin_bswap16(telemetria.tempOleo)) / 10.0f;
-
-  float tensaoBat = (float)((uint16_t)__builtin_bswap16(telemetria.tensaoBat)) / 10.0f;
-
-  float tMotor = (float)((int16_t)__builtin_bswap16(telemetria.tempMotor)) / 10.0f;
-  float pComb = (float)((int16_t)__builtin_bswap16(telemetria.pressaoComb)) / 10.0f;
-  float tps = (float)__builtin_bswap16(telemetria.tps) / 10.0f;
-
-  float pressMap = (float)((int16_t)__builtin_bswap16(telemetria.map)) / 100.0f;
-  float tAr = (float)((int16_t)__builtin_bswap16(telemetria.tempAr)) / 10.0f;
-  int16_t tExaust = (int16_t)__builtin_bswap16(telemetria.tempExaustao);
-  float lambdaVal = (float)__builtin_bswap16(telemetria.lambda) / 100.0f;
-
-  float tComb = (float)((int16_t)__builtin_bswap16(telemetria.tempComb)) / 10.0f;
-  uint16_t marcha = __builtin_bswap16(telemetria.marcha);
-  uint16_t erroECU = __builtin_bswap16(telemetria.erroECU);
-
-  Serial.printf("RPM: %u | TPS: %5.1f%% | TMot: %5.1f C | TAr: %5.1f C\n", rpm, tps, tMotor, tAr);
-}
-
-// Função para debug
-void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte* buf) {
-  sprintf(msgString, "FRAME %d => Standart ID: 0x%.3lX  DLC: %1d  Data:", frame, rxId, len);
-  Serial.printf(msgString);
-  for (byte i = 0; i < len; i++) {
-    sprintf(msgString, " 0x%.2X", buf[i]);
-    Serial.print(msgString);
-  }
-  Serial.println();
-}
+#define MODEM_RESET_PIN 5
+#define MODEM_PWKEY 4
+#define MODEM_POWER_ON 12
+#define MODEM_TX 26
+#define MODEM_RX 27
+#define MODEM_RESET_LEVEL HIGH
+#define MODEM_GPS_ENABLE_GPIO -1
 
 void setup() {
   Serial.begin(115200);
 
-  bootId = esp_random();
+  // Inicilizar Modem -> Modem Info,Name... -> SIM Status -> Esperar Rede LTE (Conectar na antena) -> Conectar e pedir IP ao APN
 
+  if (!inicializarModem()) {
+    Serial.println("Deu erro em algo ai");
+    while (true) { ; }
+  }
+  Serial.println("Deu boa... Indo para o envio mqtt teste");
+
+  if (!conectarMQTT()) {
+    Serial.println("Deu bosta ao conectar ao mqtt");
+    while (true) { ; }
+  }
+  Serial.println("Conctou ao servidor MQTT... Enviando pacote teste");
+
+  if (!publicarTesteMQTT()) {
+    Serial.println("Deu merda ao publicar o teste no broker");
+    while (true) { ; }
+  }
+  Serial.println("================= TUDO FILÉ PAPAI ==================");
+  Serial.println("Teste de publicação do binário");
+
+  bootId = esp_random();
   if (bootId == 0) {
     bootId = 1;
   }
@@ -148,8 +82,9 @@ void setup() {
   Serial.println("MCP2515 pronto! Lendo dados da CAN...");
 }
 
-
 void loop() {
+  processarMQTT();
+
   if (CAN0.checkReceive() == CAN_MSGAVAIL) {
 
     unsigned long rxId;
@@ -168,8 +103,7 @@ void loop() {
 
       // Se os quatro quadros foram recebidos finaliza a amostra anterior.
       if (estadoPacote == 5) {
-        timestampValido = obterTimestampUTC(&sampleUnixSeconds, &sampleMilliseconds);
-        gerarPacotePJv1();
+        gerarPacotePJv2();
       }
 
       // Reinicia a maquina de estados.
@@ -210,4 +144,88 @@ void loop() {
         break;
     }
   }
+}
+
+// ======================= funcoeos ===============================
+void gerarPacotePJv2() {
+  sequenceNumber++;
+
+  montaPacotePJ(bootId, sequenceNumber, pTelemetria, packetBuffer);
+
+
+  Serial.println("\n--- PACOTE PJ v2 ---");
+
+  Serial.printf("Boot ID: 0x%08lX\n", (unsigned long)bootId);
+  Serial.printf("Sequence: %lu\n", (unsigned long)sequenceNumber);
+  Serial.printf("Tamanho: %u bytes\n", (unsigned int)PJ_V2_PACKET_SIZE);
+
+  Serial.print("PJv2_HEX: ");
+
+  for (uint16_t i = 0; i < PJ_V2_PACKET_SIZE; i++) {
+    Serial.printf("%02X ", packetBuffer[i]);
+  }
+  Serial.println();
+
+  // Controle da frequencia de publicacao
+  static uint32_t ultima_publicacao_ms = 0;
+
+  uint32_t agora = millis();
+
+  if ((ultima_publicacao_ms == 0) || (uint32_t)(agora - ultima_publicacao_ms) >= MQTT_PUBLISH_INTERVAL_MS) {
+    Serial.println("Publicando telemetria...");
+
+    uint32_t inicio_publicacao = millis();
+    uint32_t duracao_publicacao = millis() - inicio_publicacao;
+
+    bool enviado = publicarMQTTBinario(packetBuffer, PJ_V2_PACKET_SIZE);
+
+    // Atualiza o instante da ultima tentativa
+    ultima_publicacao_ms = millis();
+
+    if (enviado) {
+      Serial.println("Pacote PJ v2 publicado!");
+    } else {
+      Serial.println("Falha na publicacao PJ v2!");
+    }
+
+    Serial.printf("Tempo de publicacao: %lu ms\n", (unsigned long)duracao_publicacao);
+  }
+  Serial.println("--------------------");
+}
+
+// Função para debug
+void mostraTele() {
+  // __builtin_bswap16: little endian -> big endian da injepro
+  uint16_t rpm = __builtin_bswap16(telemetria.rpm);
+  float vel = (float)__builtin_bswap16(telemetria.velocidade) / 10.0f;
+  float pOleo = (float)((int16_t)__builtin_bswap16(telemetria.pressaoOleo)) / 10.0f;
+  float tOleo = (float)((int16_t)__builtin_bswap16(telemetria.tempOleo)) / 10.0f;
+
+  float tensaoBat = (float)((uint16_t)__builtin_bswap16(telemetria.tensaoBat)) / 10.0f;
+
+  float tMotor = (float)((int16_t)__builtin_bswap16(telemetria.tempMotor)) / 10.0f;
+  float pComb = (float)((int16_t)__builtin_bswap16(telemetria.pressaoComb)) / 10.0f;
+  float tps = (float)__builtin_bswap16(telemetria.tps) / 10.0f;
+
+  float pressMap = (float)((int16_t)__builtin_bswap16(telemetria.map)) / 100.0f;
+  float tAr = (float)((int16_t)__builtin_bswap16(telemetria.tempAr)) / 10.0f;
+  int16_t tExaust = (int16_t)__builtin_bswap16(telemetria.tempExaustao);
+  float lambdaVal = (float)__builtin_bswap16(telemetria.lambda) / 100.0f;
+
+  float tComb = (float)((int16_t)__builtin_bswap16(telemetria.tempComb)) / 10.0f;
+  uint16_t marcha = __builtin_bswap16(telemetria.marcha);
+  uint16_t erroECU = __builtin_bswap16(telemetria.erroECU);
+
+  Serial.printf("RPM: %u | TPS: %5.1f%% | TMot: %5.1f C | TAr: %5.1f C\n", rpm, tps, tMotor, tAr);
+}
+
+// Função para debug
+void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte* buf) {
+  sprintf(msgString, "FRAME %d => Standart ID: 0x%.3lX  DLC: %1d  Data:", frame, rxId, len);
+  Serial.printf(msgString);
+  for (byte i = 0; i < len; i++) {
+    sprintf(msgString, " 0x%.2X", buf[i]);
+    Serial.print(msgString);
+  }
+  Serial.println();
 }

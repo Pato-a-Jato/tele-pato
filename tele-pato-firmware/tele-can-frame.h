@@ -12,15 +12,6 @@ const uint8_t CAN_FRAME_COUNT = 4;
 const uint8_t CAN_SYNC_BYTE_0 = 0xFB;
 const uint8_t CAN_SYNC_BYTE_1 = 0xFA;
 
-// Protocolo PJ v1
-const uint8_t PJ_V1_HEADER_SIZE = 14;
-
-const uint8_t PJ_V1_CAN_SIZE = 32;  // CAN_FRAME_SIZE * CAN_FRAME_COUNT;
-
-const uint8_t PJ_V1_PACKET_SIZE = 46;  //PJ_V1_HEADER_SIZE + PJ_V1_CAN_SIZE;
-
-const uint16_t TELEMETRY_RATE_HZ = 10;
-
 // Struct de pacotes da CAN
 struct __attribute__((packed)) frameTelemetria {
   // --- Pacote 1 (Bytes 0 a 7) ---
