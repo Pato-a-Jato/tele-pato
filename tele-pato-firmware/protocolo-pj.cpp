@@ -3,7 +3,6 @@
 #include "protocolo-pj.h"
 #include "mqtt-config.h"
 
-
 // PACOTE PJ V2
 void montaPacotePJ(
   uint32_t bootId,          // identificação da inicialização atual

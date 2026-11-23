@@ -1,6 +1,7 @@
 **/.env
 **/.env.*
 **/.venv/
+tele-collector/.venv/
 **/__pycache__/
 
 **/credentials.txt

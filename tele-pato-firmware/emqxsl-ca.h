@@ -1,8 +1,8 @@
 #ifndef EMQXSL_CA_H
 #define EMQXSL_CA_H
 
-// Certificado CA raiz fornecido pelo deployment EMQX Cloud.
-// Certificado publico: usado para validar o servidor TLS.
+// Certificado CA raiz fornecido pelo deployment EMQX Cloud
+// Certificado publico: usado para validar o servidor TLS
 static const char EMQX_CA_CERT[] = R"PEM(-----BEGIN CERTIFICATE-----
 MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
 MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
