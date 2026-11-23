@@ -2,19 +2,24 @@
 #ifndef MQTT_CONFIG_H
 #define MQTT_CONFIG_H
 
+#include <stdint.h>
+
 // Inicializacao do modem e conexao GPRS
 bool inicializarModem();
 
-// Inicializacao da conexao MQTT
+// Configuracao TLS e MQTT, executada uma vez
+bool configurarMQTT();
+
+// Conexao ou reconexao MQTT
 bool conectarMQTT();
 
-// Publicacao de uma mensagem de teste
-bool publicarTesteMQTT();
+// Verifica o estado da conexao
+bool mqttConectado();
 
-// Publica um buffer binario genérrico via MQTT
+// Publicacao de um buffer binario
 bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho);
 
-// Processamento das mensagens e eventos MQTT
-void processarMQTT();
+// Processa eventos e mantem a conexao ativa
+bool processarMQTT();
 
 #endif

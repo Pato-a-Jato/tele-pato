@@ -8,13 +8,8 @@
 #include "emqxsl-ca.h"
 #include "secrets.h"
 
-// ===================== mqtt info ========================
-static uint16_t keepAlive = 60;
-static uint16_t timeout = 30;
-
 // CONFIGURACAO DO MODEM
 #define SerialAT Serial1
-#define TINY_GSM_DEBUG Serial
 
 #define MODEM_RESET_PIN 5
 #define MODEM_PWRKEY_PIN 4
@@ -44,12 +39,15 @@ const char *gprsPass = "vivo";
 StreamDebugger debugger(SerialAT, Serial);
 TinyGsm modem(debugger);
 #else
-TinyGsm modem(SerialAT);                                           // objeto modem
+TinyGsm modem(SerialAT); // objeto modem
 #endif
 
 // Objetos de comunicação
 TinyGsmClientSecure client(modem);
 PubSubClient mqtt(client);
+
+static uint16_t keepAlive = 60;
+static uint16_t timeout = 30;
 
 // Nome do arquivo do certificado armazenado no modem
 const char *NOME_CA_CERT = "emqxsl-ca.pem";
@@ -60,14 +58,14 @@ bool inicializarModem() {
   delay(100);
 
   /* Set Power control pin output
-    * * @note      Known issues, ESP32 (V1.2) version of T-A7670, T-A7608,
-    *            when using battery power supply mode, BOARD_POWERON_PIN (IO12) must be set to high level after esp32 starts, otherwise a reset will occur.
+    * * @note  Known issues, ESP32 (V1.2) version of T-A7670, T-A7608,
+    * when using battery power supply mode, BOARD_POWERON_PIN (IO12) must be set to high level after esp32 starts, otherwise a reset will occur.
     * */
   pinMode(MODEM_POWER_ON_PIN, OUTPUT);
   digitalWrite(MODEM_POWER_ON_PIN, HIGH);
   delay(500);
 
-  // // Set modem reset pin ,reset modem
+  // Set modem reset pin ,reset modem
   pinMode(MODEM_RESET_PIN, OUTPUT);
   digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
   delay(100);
@@ -96,7 +94,7 @@ bool inicializarModem() {
   delay(3000);
 
   Serial.println("Inicializando Modem...");
-  if (!modem.init()) {
+  if (!modem.restart()) {
     Serial.println("ERRO: falha na inicializacao do modem.");
     // TRATAR AQUI !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
@@ -116,7 +114,7 @@ bool inicializarModem() {
     modem.simUnlock(GSM_PIN);
   }
 
-  Serial.println(" Modem pronto!");
+  Serial.println("Modem pronto!");
 
   Serial.print("Esperando rede...");
   if (!modem.waitForNetwork()) {
@@ -132,7 +130,7 @@ bool inicializarModem() {
     Serial.println("Rede Conectada!");
   }
 
-  // Conexão GPRS
+  // conexão GPRS
   Serial.println("Tentando conectar ao apn: ");
   Serial.print(apn);
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
@@ -149,48 +147,100 @@ bool inicializarModem() {
   return true;
 }
 
-// Realiza a conexão MQTT
-bool conectarMQTT() {
-
-  Serial.println("\n================================");
-  Serial.println(" INICIALIZANDO MQTT");
-  Serial.println("================================");
-
-  // remove uma copia anterior do certificado, se existir
+bool configurarMQTT() {
+  // remove uma copia anterior do certificado
   modem.deleteCertificate(NOME_CA_CERT);
 
-  // transfere o certificado PEM para o armazenamento do modem.
-  Serial.println("Armazenando certificado CA no modem...");
+  // armazena o certificado CA no modem
   if (!modem.downloadCertificate(NOME_CA_CERT, EMQX_CA_CERT)) {
-    Serial.println("ERRO: falha ao armazenar certificado CA");
     return false;
   }
-  Serial.println("Certificado CA armazenado!");
 
-  // associa o arquivo ao cliente SSL
+  // associa o certificado ao cliente TLS
   if (!client.setCertificate(NOME_CA_CERT)) {
-    Serial.println("ERRO: falha ao configurar certificado SSL");
     return false;
   }
 
+  // configura o broker e os parametros MQTT
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setKeepAlive(keepAlive);
   mqtt.setSocketTimeout(timeout);
 
-  Serial.println("Conectando ao EMQX Cloud...");
+  return true;
+}
 
-  if(!mqtt.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)){
-    Serial.print("ERRO: conexão MQTT falhou. Estado: ");
-    Serial.println(mqtt.state());
+// Realiza a conexão MQTT
+bool conectarMQTT() {
 
-    return false;
+  // conectou?
+  if (mqtt.connected()) {
+    return true;
   }
 
-  Serial.println("MQTT conectado com sucesso!");
+  // verifica o registro na rede celular
+  if (!modem.isNetworkConnected()) {
+    if (!modem.waitForNetwork(60000L)) {
+      return false;
+    }
+  }
+
+  // verifica a conexao GPRS.
+  if (!modem.isGprsConnected()) {
+    if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+      return false;
+    }
+  }
+
+  // encerra qualquer socket anterior
+  client.stop();
+
+  // estabelece uma nova conexao MQTT
+  if (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
+    return false;
+  }
 
   return true;
 }
 
+// Publica um binário via MQTT -> espectificar conteúdoo e tamanho do binaŕio
+bool mqttConectado() {
+
+  return mqtt.connected();
+}
+
+bool publicarMQTTBinario(
+  const uint8_t *payload,
+  uint32_t tamanho) {
+
+  if (payload == NULL || tamanho == 0) {
+    return false;
+  }
+
+  if (!mqtt.connected()) {
+    return false;
+  }
+
+  return mqtt.publish(
+    MQTT_TOPIC_TELEMETRIA,
+    payload,
+    (unsigned int)tamanho,
+    false);
+}
+
+bool processarMQTT() {
+
+  if (!mqtt.connected()) {
+    return false;
+  }
+
+  if (!mqtt.loop()) {
+    return false;
+  }
+
+  return mqtt.connected();
+}
+
+/*
 // PUBLICACAO DE TESTE
 bool publicarTesteMQTT() {
 
@@ -209,45 +259,4 @@ bool publicarTesteMQTT() {
 
   return true;
 }
-
-// Publica um binário via MQTT -> espectificar conteúdoo e tamanho do binaŕio
-bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho) {
-  
-  // Verifica os parametros
-  if (payload == NULL || tamanho == 0) {
-    Serial.println("ERRO: payload binario invalido");
-    return false;
-  }
-
-  if(!mqtt.connected()){
-    Serial.println("ERRO: cliente MQTT desconectado");
-    return false;
-  }
-
-  Serial.println();
-  Serial.println("Publicando pacote binario PJ v1...");
-
-  Serial.print("Topico: ");
-  Serial.println(MQTT_TOPIC_TELEMETRIA);
-
-  Serial.print("Tamanho: ");
-  Serial.print(tamanho);
-  Serial.println(" bytes");
-
-  // Publica o buffer binario
-  // boolean PubSubClient::publish(const char* topic, const uint8_t* payload, unsigned int plength) {
-  bool resultado = mqtt.publish(MQTT_TOPIC_TELEMETRIA, payload, (unsigned int)tamanho, false);
-  if (!resultado) {
-    Serial.println("ERRO: falha ao publicar pacote binario");
-    return false;
-  }
-
-  Serial.println("Pacote PJ v2 publicado!");
-
-  return true;
-}
-
-// PROCESSAMENTO MQTT
-void processarMQTT() {
-  mqtt.loop();
-}
+*/
