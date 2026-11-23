@@ -21,10 +21,10 @@ struct __attribute__((packed)) frameTelemetria {
   int16_t tempOleo;     // 0.1 °C
 
   // --- Pacote 2 (Bytes 8 a 15) ---
-  int16_t tempMotor;    // 0.1 °C (Water Temp)
-  int16_t pressaoComb;  // 0.1 bar
-  uint16_t tensaoBat;   // 0.1 V (ou marcador 0x1B no byte 12 dependendo da versão)
-  uint16_t tps;         // 0.1 %
+  int16_t tempMotor;      // 0.1 °C (Water Temp)
+  int16_t pressaoComb;    // 0.1 bar
+  uint16_t marcador1B00;  // marcador 0x1B no byte 12 (era pra ser Tensão da Bateria)
+  uint16_t tps;           // 0.1 %
 
   // --- Pacote 3 (Bytes 16 a 23) ---
   int16_t map;           // 0.01 bar (-1.00 a 6.00 bar)
@@ -38,5 +38,9 @@ struct __attribute__((packed)) frameTelemetria {
   uint16_t erroECU;            // Códigos de erro
   uint16_t valorFixo0x1E0xFC;  // 0x1E e 0xFC fixo
 };
+
+// --- Pacote 5 ----
+// 0xFB 0xFA = FIXED VALUE
+// 0x91 = END CHECKSUN (sum of all byte)
 
 #endif

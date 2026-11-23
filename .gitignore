@@ -1,8 +1,13 @@
 **/.env
 **/.env.*
 **/.venv/
-tele-collector/.venv/
+**/tele-collector/.venv/
 **/__pycache__/
+
+.env
+.venv/
+__pycache__/
+*.pyc
 
 **/credentials.txt
 **/credentials

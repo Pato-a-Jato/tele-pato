@@ -12,7 +12,6 @@
 static uint16_t keepAlive = 60;
 static uint16_t timeout = 30;
 
-
 // CONFIGURACAO DO MODEM
 #define SerialAT Serial1
 #define TINY_GSM_DEBUG Serial
@@ -236,7 +235,7 @@ bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho) {
   Serial.println(" bytes");
 
   // Publica o buffer binario
-  // mqtt_publish_binary(client_index, topic, payload, tamanho, QoS, timeout, retain)
+  // boolean PubSubClient::publish(const char* topic, const uint8_t* payload, unsigned int plength) {
   bool resultado = mqtt.publish(MQTT_TOPIC_TELEMETRIA, payload, (unsigned int)tamanho, false);
   if (!resultado) {
     Serial.println("ERRO: falha ao publicar pacote binario");
