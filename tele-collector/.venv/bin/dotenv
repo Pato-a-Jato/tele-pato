@@ -1,4 +1,4 @@
-#!/home/yurigabriel/Projects/tele-pato/.venv/bin/python
+#!/home/yurigabriel/Projects/tele-pato/tele-collector/.venv/bin/python3
 import sys
 from dotenv.__main__ import cli
 if __name__ == '__main__':

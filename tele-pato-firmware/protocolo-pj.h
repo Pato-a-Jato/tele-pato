@@ -9,8 +9,6 @@
 #define PJ_V2_CAN_SIZE (CAN_FRAME_SIZE * CAN_FRAME_COUNT)
 #define PJ_V2_PACKET_SIZE (PJ_V2_HEADER_SIZE + PJ_V2_CAN_SIZE)
 
-#define MQTT_PUBLISH_INTERVAL_MS 1000
-
 // Monta o pacote binario PJ v1 - frame com 46 bytes
 void montaPacotePJ(
   uint32_t bootId,     // identificação da inicialização atual

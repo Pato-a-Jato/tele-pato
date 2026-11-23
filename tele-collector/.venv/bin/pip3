@@ -1,6 +1,6 @@
-#!/home/yurigabriel/Projects/tele-pato/.venv/bin/python
+#!/home/yurigabriel/Projects/tele-pato/tele-collector/.venv/bin/python3
 import sys
-from pip._internal.cli.main import cli
+from pip._internal.cli.main import main
 if __name__ == '__main__':
     sys.argv[0] = sys.argv[0].removesuffix('.exe')
-    sys.exit(cli())
+    sys.exit(main())

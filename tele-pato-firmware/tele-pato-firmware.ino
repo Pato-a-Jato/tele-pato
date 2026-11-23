@@ -25,13 +25,14 @@ uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
 uint8_t packetBuffer[PJ_V2_PACKET_SIZE];
 
+#define MQTT_PUBLISH_INTERVAL_MS 5000
+
 // MODEM CONFIG
 #define SerialAT Serial1
 #define TINY_GSM_DEBUG Serial
 
 //#define MODEM_BAUD 115200
 #define MODEM_BAUD 28800
-
 #define MODEM_RESET_PIN 5
 #define MODEM_PWKEY 4
 #define MODEM_POWER_ON 12

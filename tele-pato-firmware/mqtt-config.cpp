@@ -5,10 +5,10 @@
 #include <PubSubClient.h>
 
 #include "mqtt-config.h"
+#include "emqxsl-ca.h"
 #include "secrets.h"
 
 // ===================== mqtt info ========================
-#define MQTT_PUBLISH_INTERVAL_MS 1000UL
 static uint16_t keepAlive = 60;
 static uint16_t timeout = 30;
 
@@ -162,7 +162,7 @@ bool conectarMQTT() {
 
   // transfere o certificado PEM para o armazenamento do modem.
   Serial.println("Armazenando certificado CA no modem...");
-  if (!modem.downloadCertificate(NOME_CA_CERT, NOME_CA_CERT)) {
+  if (!modem.downloadCertificate(NOME_CA_CERT, EMQX_CA_CERT)) {
     Serial.println("ERRO: falha ao armazenar certificado CA");
     return false;
   }
@@ -199,7 +199,7 @@ bool publicarTesteMQTT() {
 
   Serial.println("\nPublicando mensagem de teste...");
 
-  bool enviado = mqtt.publish(MQTT_TOPIC, mensagem);
+  bool enviado = mqtt.publish(MQTT_TOPIC_TELEMETRIA, mensagem);
 
   if (!enviado) {
     Serial.println("ERRO: falha ao publicar");
