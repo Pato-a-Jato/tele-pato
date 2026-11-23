@@ -9,6 +9,27 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 
+volatile uint32_t canFramesRecebidos = 0;
+volatile uint32_t canFramesOutrosIDs = 0;
+volatile uint32_t canFramesDLCInvalido = 0;
+
+volatile uint32_t canAmostrasValidas = 0;
+volatile uint32_t canAmostrasRejeitadas = 0;
+volatile uint32_t canSemPacote1 = 0;
+
+volatile uint32_t canAmostrasEnfileiradas = 0;
+
+volatile uint32_t mqttPacotesRecebidosFila = 0;
+volatile uint32_t mqttPublicacoesOK = 0;
+volatile uint32_t mqttPublicacoesFalha = 0;
+
+volatile uint32_t canUltimoEnfileiramentoMs = 0;
+volatile uint32_t mqttUltimoRecebimentoMs = 0;
+
+volatile uint32_t mqttUltimaDuracaoLoopMs = 0;
+volatile uint32_t mqttMaiorDuracaoLoopMs = 0;
+
+#define CAN_INT_PIN 32
 const int SPI_CS_PIN = 13;
 const int SPI_SCK = 18;
 const int SPI_MISO = 19;
@@ -16,39 +37,45 @@ const int SPI_MOSI = 23;
 
 MCP_CAN CAN0(SPI_CS_PIN);
 
+// AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+TaskHandle_t tarefaCANHandle = NULL;
+
+volatile uint32_t canInterrupcoes = 0;
+
 char msgString[128];
 
-// ponteiro auxiliar pra percorrer a lista
 frameTelemetria telemetria;
-uint8_t* pTelemetria = (uint8_t*)&telemetria;
+uint8_t *pTelemetria = (uint8_t *)&telemetria;
 
-// MAQUINA DE ESTADOS - RECEPCAO CAN
-enum CAN_FSM {
-  AGUARDANDO_SINCRONISMO = 0,
-  AGUARDANDO_PACOTE_2,
-  AGUARDANDO_PACOTE_3,
-  AGUARDANDO_PACOTE_4,
-  AGUARDANDO_CONTROLE,
-  DESCARTANDO_AMOSTRA
-};
-
-CAN_FSM estadoCAN = AGUARDANDO_SINCRONISMO;
-
-// Armazena o frame imediatamente anterior ao marcador 1B 00.
+// Guarda o frame imediatamente anterior.
 uint8_t frameAnterior[CAN_FRAME_SIZE];
 bool frameAnteriorValido = false;
 
-// Quantidade de frames armazenados na amostra atual.
-uint8_t framesCapturados = 0;
+// Maquina de estados simplificada.
+enum CAN_FSM {
+  BUSCANDO_PACOTE_2 = 0,
+  AGUARDANDO_PACOTE_3,
+  AGUARDANDO_PACOTE_4
+};
+
+CAN_FSM estadoCAN = BUSCANDO_PACOTE_2;
+
+// Diagnosticos adicionais.
+volatile uint32_t canMarcadoresP2 = 0;
+volatile uint32_t canFalhasFila = 0;
+
 
 // PROTOCOLO PJ V2
 uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
-uint8_t packetBuffer[PJ_V2_PACKET_SIZE];
 
 #define MQTT_PUBLISH_INTERVAL_MS 250
 
-// FILA DE ENVIO DO PROTOCOLO PJ V2
+typedef struct {
+  uint8_t dados[PJ_V2_PACKET_SIZE];
+} PacoteTelemetria;
+
+QueueHandle_t filaTelemetria = NULL;
 
 // MODEM CONFIG
 #define SerialAT Serial1
@@ -64,32 +91,43 @@ uint8_t packetBuffer[PJ_V2_PACKET_SIZE];
 #define MODEM_RESET_LEVEL HIGH
 #define MODEM_GPS_ENABLE_GPIO -1
 
+void tarefaAquisicaoCAN(void *pvParameters);
+void tarefaPublicacaoMQTT(void *pvParameters);
+
+void processarFrameCAN(const uint8_t *buf);
+void gerarPacotePJv2();
+
+void IRAM_ATTR interrupcaoCAN() {
+
+  BaseType_t prioridadeAcordada = pdFALSE;
+
+  canInterrupcoes++;
+
+  if (tarefaCANHandle != NULL) {
+    vTaskNotifyGiveFromISR(tarefaCANHandle, &prioridadeAcordada);
+  }
+
+  if (prioridadeAcordada == pdTRUE) {
+    portYIELD_FROM_ISR();
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
   // Inicilizar Modem -> Modem Info,Name... -> SIM Status -> Esperar Rede LTE (Conectar na antena) -> Conectar e pedir IP ao APN
-
   if (!inicializarModem()) {
-    Serial.println("Deu erro em algo ai");
-    while (true) { ; }
+    Serial.println("[MODEM] Falha na inicializacao.");
+    for (;;) {}
   }
-  Serial.println("Deu boa... Indo para o envio mqtt teste");
 
   delay(5000);
 
-  if (!conectarMQTT()) {
-    Serial.println("Deu bosta ao conectar ao mqtt");
-    while (true) { ; }
+  if (!configurarMQTT()) {
+    Serial.println("[MQTT] Falha na configuracao TLS.");
+    for (;;) {}
   }
-  Serial.println("Conctou ao servidor MQTT... Enviando pacote teste");
-
-  /*
-  if (!publicarTesteMQTT()) {
-    Serial.println("Deu merda ao publicar o teste no broker");
-    while (true) { ; }
-  }
-*/
-  Serial.println("================= TUDO FILÉ PAPAI ==================");
+  Serial.println("[MQTT] Cliente configurado; aguardando conexao.");
 
   bootId = esp_random();
   if (bootId == 0) {
@@ -106,253 +144,321 @@ void setup() {
 
   CAN0.setMode(MCP_NORMAL);
   Serial.println("MCP2515 pronto! Lendo dados da CAN...");
+
+  // CRIACAO DA FILA UNITÁRIA DE TELEMETRIA
+  filaTelemetria = xQueueCreate(1, sizeof(PacoteTelemetria));
+
+  if (filaTelemetria == NULL) {
+    Serial.println("ERRO: Nao foi possivel criar a fila MQTT!");
+    for (;;) {}
+  }
+
+  Serial.println("[RTOS] Fila de telemetria criada.");
+
+  // TASK CAN RECEIVE - CORE 1
+  BaseType_t resCAN = xTaskCreatePinnedToCore(tarefaAquisicaoCAN, "CAN_RX", 4096, NULL, 4, &tarefaCANHandle, 1);
+  if (resCAN != pdPASS) {
+    Serial.println("[ERRO] Falha ao criar tarefa CAN.");
+    for (;;) {}
+  }
+
+  // Configura a interrupcao somente depois de criar a tarefa.
+  pinMode(CAN_INT_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(CAN_INT_PIN), interrupcaoCAN, FALLING);
+
+  // Verifica se ja existe interrupcao pendente.
+  if (digitalRead(CAN_INT_PIN) == LOW) {
+    xTaskNotifyGive(tarefaCANHandle);
+  }
+
+  // TASK MQTT PUBLISH - CORE 0
+  BaseType_t resMQTT = xTaskCreatePinnedToCore(tarefaPublicacaoMQTT, "MQTT_TX", 8192, NULL, 2, NULL, 0);
+  if (resMQTT != pdPASS) {
+    Serial.println("[ERRO] Falha ao criar tarefa MQTT.");
+    for (;;) {}
+  }
+
+  Serial.println("[RTOS] Sistema de telemetria iniciado");
 }
 
 void loop() {
+  vTaskDelay(pdMS_TO_TICKS(1000));
+}
 
-  processarMQTT();
+void tarefaAquisicaoCAN(void *pvParameters) {
+  Serial.println("[CAN] Task de aquisicao iniciada.");
 
-  static uint32_t framesOutrosIDs = 0;
-  static uint32_t framesDLCInvalido = 0;
+  for (;;) {
+    // Aguarda uma notificacao da interrupcao do MCP2515.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-  while (CAN0.checkReceive() == CAN_MSGAVAIL) {
+    // Processa todos os frames disponiveis.
+    while (CAN0.checkReceive() == CAN_MSGAVAIL) {
+      unsigned long rxId;
+      byte len = 0;
+      byte buf[8];
 
-    unsigned long rxId;
-    byte len = 0;
-    byte buf[8];
+      CAN0.readMsgBuf(&rxId, &len, buf);
 
-    CAN0.readMsgBuf(&rxId, &len, buf);
-
-    // Aceita somente o ID de telemetria da Injepro.
-    if (rxId != CAN_ID_INJEPRO) {
-
-      framesOutrosIDs++;
-
-      // Mostra somente os primeiros 10 frames ignorados.
-      if (framesOutrosIDs <= 10) {
-        Serial.printf("[CAN] Outro ID ignorado: 0x%03lX | DLC: %u\n", rxId, len);
-      }
-      continue;
-    }
-
-    // Verifica o tamanho do frame da Injepro.
-    if (len != CAN_FRAME_SIZE) {
-
-      framesDLCInvalido++;
-
-      if (framesDLCInvalido <= 10) {
-        Serial.printf("[CAN] DLC invalido: 0x%03lX | DLC: %u\n", rxId, len);
+      // Filtro do identificador da Injepro.
+      if (rxId != CAN_ID_INJEPRO) {
+        canFramesOutrosIDs++;
+        continue;
       }
 
-      continue;
-    }
+      // Verifica o tamanho do frame.
+      if (len != CAN_FRAME_SIZE) {
+        canFramesDLCInvalido++;
+        continue;
+      }
 
-    // Somente frames da Injepro chegam à máquina de estados.
-    processarFrameCAN(buf);
+      canFramesRecebidos++;
+
+      // Executa a maquina de estados
+      processarFrameCAN(buf);
+    }
   }
 }
 
 void processarFrameCAN(const uint8_t *buf) {
 
-  // Identifica os marcadores da Injepro.
-  bool ehPacoteControle = (buf[0] == CAN_SYNC_BYTE_0 && buf[1] == CAN_SYNC_BYTE_1);
+  // Identifica o pacote 2 pelo marcador 1B 00
+  bool ehPacote2 =
+    (buf[4] == 0x1B && buf[5] == 0x00);
 
-  bool ehPacote2 = (buf[4] == 0x1B && buf[5] == 0x00);
+  if (ehPacote2) {
+    canMarcadoresP2++;
+  }
 
-  // PACOTE DE CONTROLE: FB FA -> FIXED VALUE PACOTE 5
-  if (ehPacoteControle) {
-    Serial.println("\n[CAN] Pacote de controle recebido.");
+  switch (estadoCAN) {
+    // procura o pacote 2
 
-    switch (estadoCAN) {
-      case AGUARDANDO_SINCRONISMO:
-        Serial.println("[CAN] Sincronizacao inicial estabelecida.");
-        break;
+    case BUSCANDO_PACOTE_2:
 
-      case AGUARDANDO_PACOTE_2:
-        Serial.println("[CAN] Nenhuma amostra completa encontrada.");
-        break;
+      if (ehPacote2) {
 
-      case AGUARDANDO_PACOTE_3:
+        if (frameAnteriorValido) {
 
-      case AGUARDANDO_PACOTE_4:
+          // Pacote 1: frame anterior ao marcador (1B 00)
+          memcpy(pTelemetria, frameAnterior, CAN_FRAME_SIZE);
 
-        Serial.printf("[CAN] Amostra incompleta: %u/4 frames.\n", framesCapturados);
+          // Pacote 2: frame atual
+          memcpy(pTelemetria + CAN_FRAME_SIZE, buf, CAN_FRAME_SIZE);
 
-        break;
+          estadoCAN = AGUARDANDO_PACOTE_3;
+        } else {
+          canSemPacote1++;
+        }
+      }
 
-      case AGUARDANDO_CONTROLE: {
-        // Verifica o marcador final do quarto pacote
-        uint8_t marcador0 = pTelemetria[30]; // deve ser 0x1E
-        uint8_t marcador1 = pTelemetria[31]; // deve ser 0xFC
+      break;
 
-        if (framesCapturados == CAN_FRAME_COUNT && marcador0 == 0x1E && marcador1 == 0xFC) {
-          Serial.println("[CAN] Amostra completa: 4/4 frames.");
-          Serial.println("[CAN] Marcador final 1E FC valido.");
+    
+    // recebe o pacote 3
+    case AGUARDANDO_PACOTE_3:
+
+      if (ehPacote2) {
+
+        // captura anterior incompleta
+        canAmostrasRejeitadas++;
+
+        if (frameAnteriorValido) {
+          memcpy(pTelemetria, frameAnterior, CAN_FRAME_SIZE);
+          memcpy(pTelemetria + CAN_FRAME_SIZE, buf, CAN_FRAME_SIZE);
+
+          estadoCAN = AGUARDANDO_PACOTE_3;
+
+        } else {
+          estadoCAN = BUSCANDO_PACOTE_2;
+          canSemPacote1++;
+        }
+
+      } else {
+        memcpy(pTelemetria + CAN_FRAME_SIZE * 2, buf, CAN_FRAME_SIZE);
+        estadoCAN = AGUARDANDO_PACOTE_4;
+      }
+
+      break;
+
+    // recebe o pacote 4
+    case AGUARDANDO_PACOTE_4:
+
+      if (ehPacote2) {
+
+        // captura anterior incompleta
+        // reinicia a partir do novo pacote 2.
+        canAmostrasRejeitadas++;
+
+        if (frameAnteriorValido) {
+          memcpy(pTelemetria, frameAnterior, CAN_FRAME_SIZE);
+
+          memcpy(pTelemetria + CAN_FRAME_SIZE, buf, CAN_FRAME_SIZE);
+
+          estadoCAN = AGUARDANDO_PACOTE_3;
+        } else {
+          estadoCAN = BUSCANDO_PACOTE_2;
+          canSemPacote1++;
+        }
+
+      } else {
+        // armazena o pacote 4
+        memcpy(pTelemetria + CAN_FRAME_SIZE * 3, buf, CAN_FRAME_SIZE);
+        
+        // valida o marcador final 1E FC
+        if (buf[6] == 0x1E && buf[7] == 0xFC) {
+          canAmostrasValidas++;
           gerarPacotePJv2();
 
         } else {
-          Serial.printf("[CAN] Amostra rejeitada. Marcador: 0x%02X%02X\n", marcador0, marcador1);
+          canAmostrasRejeitadas++;
         }
-        break;
+
+        // prepara para procurar a proxima amostra
+        estadoCAN = BUSCANDO_PACOTE_2;
       }
 
-      case DESCARTANDO_AMOSTRA:
-        Serial.println("[CAN] Descarte finalizado. Nova sincronizacao.");
-        break;
-    }
-
-    // Reinicia a captura após o pacote de controle.
-    estadoCAN = AGUARDANDO_PACOTE_2;
-    frameAnteriorValido = false;
-    framesCapturados = 0;
-    return;
-  }
-
-  // AGUARDANDO UM NOVO CICLO DE SINCRONIZACAO
-  if (estadoCAN == AGUARDANDO_SINCRONISMO) {
-    return;
-  }
-
-  // Se a amostra já está completa, aguardamos o controle.
-  // Não sobrescrevemos os dados com frames de uma repetição.
-  if (estadoCAN == AGUARDANDO_CONTROLE) {
-    return;
-  }
-
-  // Se a amostra foi descartada, ignora os frames até FB FA
-  if (estadoCAN == DESCARTANDO_AMOSTRA) {
-    return;
-  }
-
-  // IDENTIFICACAO DO SEGUNDO PACOTE: 1B 00
-  if (ehPacote2) {
-
-    if (estadoCAN != AGUARDANDO_PACOTE_2) {
-      Serial.println("[CAN] Novo marcador 1B 00 durante uma captura incompleta");
-      Serial.println("[CAN] Descartando amostra ate o proximo FB FA"); // valor fixo do pacote 5
-      estadoCAN = DESCARTANDO_AMOSTRA;
-      frameAnteriorValido = false;
-      framesCapturados = 0;
-      return;
-    }
-
-    // Precisamos do pacote 1 imediatamente anterior.
-    if (!frameAnteriorValido) {
-      Serial.println("[CAN] Pacote 1 nao disponivel -> Descartando esta amostra" );
-      estadoCAN = DESCARTANDO_AMOSTRA;
-      return;
-    }
-
-    // Armazena o primeiro pacote.
-    memcpy(pTelemetria, frameAnterior, CAN_FRAME_SIZE);
-
-    // Armazena o segundo pacote.
-    memcpy(pTelemetria + CAN_FRAME_SIZE, buf, CAN_FRAME_SIZE);
-    framesCapturados = 2;
-    estadoCAN = AGUARDANDO_PACOTE_3;
-    frameAnteriorValido = false;
-
-    Serial.println("[CAN] Pacotes 1 e 2 identificados" );
-
-    return;
-  }
-
-  // RECEPCAO DOS PACOTES 1, 3 E 4
-  switch (estadoCAN) {
-
-    case AGUARDANDO_PACOTE_2:
-      // Guarda o frame anterior ao marcador 1B 00 -> int16_t pressaoComb;  // 0.1 bar
-      memcpy(frameAnterior, buf, CAN_FRAME_SIZE);
-      frameAnteriorValido = true;
-      break;
-
-    case AGUARDANDO_PACOTE_3:
-
-      // Armazena o terceiro pacote.
-      memcpy(pTelemetria + CAN_FRAME_SIZE * 2, buf, CAN_FRAME_SIZE);
-      framesCapturados = 3;
-      estadoCAN = AGUARDANDO_PACOTE_4;
-      break;
-
-    case AGUARDANDO_PACOTE_4:
-      // Armazena o quarto pacote.
-      memcpy(pTelemetria + CAN_FRAME_SIZE * 3, buf, CAN_FRAME_SIZE);
-      framesCapturados = 4;
-      estadoCAN = AGUARDANDO_CONTROLE;
-      Serial.printf("[CAN] Quarto pacote recebido. Marcador: %02X %02X\n", pTelemetria[30], pTelemetria[31]);
-      break;
-
-    default:
       break;
   }
+
+  // guarda o frame atual para a proxima iteracao, ele podera ser o pacote 1 da proxima amostra
+  memcpy(frameAnterior, buf, CAN_FRAME_SIZE);
+
+  frameAnteriorValido = true;
 }
 
+// Task MQTT Publish
+void tarefaPublicacaoMQTT(void *pvParameters) {
 
+  PacoteTelemetria pacoteRecebido;
 
-// ======================= funcoeos ===============================
+  uint8_t pacotePendente[PJ_V2_PACKET_SIZE];
+
+  bool temPacotePendente = false;
+  bool primeiraPublicacao = true;
+  bool conexaoAnterior = false;
+
+  TickType_t ultimaPublicacao = 0;
+
+  const TickType_t intervaloPublicacao = pdMS_TO_TICKS(MQTT_PUBLISH_INTERVAL_MS);
+
+  // intervalos entre tentativas de reconexao
+  const uint32_t intervalosReconexao[] = {1000, 2000, 5000, 10000, 30000};
+
+  const uint8_t totalIntervalos = sizeof(intervalosReconexao) / sizeof(intervalosReconexao[0]);
+
+  uint8_t indiceReconexao = 0;
+
+  // a primeira tentativa sera imediata
+  uint32_t proximaTentativaMs = 0;
+
+  for (;;) {
+    // 1. MANTEM A CONEXAO MQTT ATIVA
+    if (mqttConectado()) {
+      processarMQTT();
+    }
+
+    // 2. DETECTA PERDA DA CONEXAO
+    if (!mqttConectado() && conexaoAnterior) {
+
+      Serial.println("[MQTT] Conexao perdida.");
+
+      conexaoAnterior = false;
+
+      // primeira tentativa apos a desconexao: 1 segundo
+      indiceReconexao = 1;
+
+      proximaTentativaMs =
+        millis() + intervalosReconexao[0];
+    }
+
+    // 3. TENTA CONECTAR OU RECONECTAR
+    uint32_t agoraMs = millis();
+
+    bool momentoReconexao = (int32_t)(agoraMs - proximaTentativaMs) >= 0;
+
+    if (!mqttConectado() && momentoReconexao) {
+
+      if (conectarMQTT()) {
+
+        Serial.println("[MQTT] Conexao estabelecida.");
+
+        conexaoAnterior = true;
+
+        // reinicia o backoff
+        indiceReconexao = 0;
+
+        // permite publicar imediatamente
+        primeiraPublicacao = true;
+        ultimaPublicacao = 0;
+
+      } else {
+
+        uint32_t espera = intervalosReconexao[indiceReconexao];
+
+        Serial.printf("[MQTT] Falha na conexao. Nova tentativa em %lu ms.\n", (unsigned long)espera);
+
+        proximaTentativaMs = millis() + espera;
+
+        // avanca o intervalo para a proxima tentativa
+        if (indiceReconexao < totalIntervalos - 1) {
+          indiceReconexao++;
+        }
+      }
+    }
+
+    // 4. RECEBE A AMOSTRA MAIS RECENTE DA FILA
+    if (xQueueReceive(filaTelemetria, &pacoteRecebido, 0) == pdPASS) {
+      memcpy(pacotePendente, pacoteRecebido.dados, PJ_V2_PACKET_SIZE);
+      temPacotePendente = true;
+    }
+
+    // 5. PUBLICA SE ESTIVER CONECTADO
+    if (mqttConectado() && temPacotePendente) {
+
+      TickType_t agora = xTaskGetTickCount();
+
+      bool intervaloConcluido = (TickType_t)(agora - ultimaPublicacao) >= intervaloPublicacao;
+
+      if (primeiraPublicacao || intervaloConcluido) {
+        bool enviado = publicarMQTTBinario(pacotePendente, PJ_V2_PACKET_SIZE);
+
+        ultimaPublicacao = xTaskGetTickCount();
+        primeiraPublicacao = false;
+
+        if (enviado) {
+          mqttPublicacoesOK++;
+          temPacotePendente = false;
+        } else {
+          mqttPublicacoesFalha++;
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
 
 void gerarPacotePJv2() {
-  // Incrementa o contador de amostras CAN completas.
-  sequenceNumber++;
-
-  // Monta o pacote PJ v2:
-  // 8 bytes de cabecalho + 32 bytes de dados CAN.
-  montaPacotePJ(bootId, sequenceNumber, pTelemetria, packetBuffer);
-
-  // Controle do intervalo de publicacao.
-  static uint32_t ultima_publicacao_ms = 0;
-  static bool primeira_publicacao = true;
-
-  uint32_t agora = millis();
-
-  // Aguarda completar o intervalo de 5 segundos.
-  if (!primeira_publicacao && (uint32_t)(agora - ultima_publicacao_ms) < MQTT_PUBLISH_INTERVAL_MS) {
+  if (filaTelemetria == NULL) {
+    canFalhasFila++;
     return;
   }
 
-  Serial.println("\n--- PUBLICANDO PACOTE PJ v2 ---");
+  // incrementa a sequencia da amostra completa
+  sequenceNumber++;
 
-  Serial.printf("Boot ID: 0x%08lX\n", (unsigned long)bootId);
-  Serial.printf("Sequence: %lu\n", (unsigned long)sequenceNumber);
-  Serial.printf("Tamanho: %u bytes\n", (unsigned int)PJ_V2_PACKET_SIZE);
+  // monta o pacote PJ v2
+  PacoteTelemetria pacote;
 
-  // Exibe o pacote completo em hexadecimal.
-  Serial.print("PJv2_HEX: ");
+  montaPacotePJ(bootId, sequenceNumber, pTelemetria, pacote.dados);
 
-  for (uint16_t i = 0; i < PJ_V2_PACKET_SIZE; i++) {
-    Serial.printf("%02X ", packetBuffer[i]);
-  }
-
-  Serial.println();
-
-  // Publica o pacote binario no MQTT.
-  Serial.println("Publicando telemetria...");
-
-  uint32_t inicio_publicacao = millis();
-
-  bool enviado = publicarMQTTBinario(
-    packetBuffer,
-    PJ_V2_PACKET_SIZE);
-
-  uint32_t duracao_publicacao = millis() - inicio_publicacao;
-
-  // Atualiza o instante da ultima tentativa de publicacao.
-  ultima_publicacao_ms = millis();
-  primeira_publicacao = false;
-
-  if (enviado) {
-    Serial.println("Pacote PJ v2 publicado!");
+  // mantem somente a amostra mais recente na fila
+  if (xQueueOverwrite(filaTelemetria, &pacote) == pdPASS) {
+    canAmostrasEnfileiradas++;
+    canUltimoEnfileiramentoMs = millis();
   } else {
-    Serial.println("Falha na publicacao PJ v2!");
+    canFalhasFila++;
   }
-
-  Serial.printf(
-    "Tempo de publicacao: %lu ms\n",
-    (unsigned long)duracao_publicacao);
-
-  Serial.println("--------------------");
 }
-
 
 // Função para debug
 void mostraTele() {
@@ -381,7 +487,7 @@ void mostraTele() {
 }
 
 // Função para debug
-void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte* buf) {
+void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte *buf) {
   sprintf(msgString, "FRAME %d => Standart ID: 0x%.3lX  DLC: %1d  Data:", frame, rxId, len);
   Serial.printf(msgString);
   for (byte i = 0; i < len; i++) {
