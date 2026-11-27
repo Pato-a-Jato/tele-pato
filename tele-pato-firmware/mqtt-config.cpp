@@ -1,5 +1,7 @@
-#define TINY_GSM_MODEM_A7672X
+// Camada de comunicacao MQTT/AWS do Pato a Jato.
+// O modem e o PubSubClient sao acessados exclusivamente por este modulo.
 
+#define TINY_GSM_MODEM_A7672X
 #define SerialMon Serial
 #define SerialAT Serial1
 #define TINY_GSM_DEBUG SerialMon
@@ -7,425 +9,202 @@
 #include <Arduino.h>
 #include <TinyGsmClient.h>
 #include <PubSubClient.h>
+#include <limits.h>
+#include <string.h>
 
 #include "mqtt-config.h"
 #include "secrets.h"
 
-// CONFIGURACAO DO MODEM
-#define MODEM_RESET_PIN 5
-#define MODEM_PWRKEY_PIN 4
-#define MODEM_POWER_ON_PIN 12
+// LilyGO T-A7670E R2
+static constexpr int MODEM_RESET_PIN = 5;
+static constexpr int MODEM_PWRKEY_PIN = 4;
+static constexpr int MODEM_POWER_ON_PIN = 12;
+static constexpr int MODEM_TX_PIN = 26;
+static constexpr int MODEM_RX_PIN = 27;
+static constexpr int MODEM_RESET_LEVEL = HIGH;
 
-#define MODEM_TX_PIN 26
-#define MODEM_RX_PIN 27
+static constexpr uint8_t TLS_MUX = 0;
+static constexpr uint16_t MQTT_KEEP_ALIVE_SECONDS = 60;
+static constexpr uint16_t MQTT_SOCKET_TIMEOUT_SECONDS = 30;
+static constexpr uint16_t MQTT_BUFFER_SIZE = 512;
 
-#define MODEM_RESET_LEVEL HIGH
-#define MODEM_GPS_ENABLE_GPIO -1
+static const char NOME_CA_CERT[] = "AmazonRootCA1.pem";
+static const char NOME_CLIENT_CERT[] = "certificate.pem";
+static const char NOME_CLIENT_KEY[] = "private-key.pem";
 
-#define GSM_PIN ""
+static TinyGsm modem(SerialAT);
+static TinyGsmClientSecure secureClient(modem, TLS_MUX);
+static PubSubClient mqtt(secureClient);
 
-//const char *apn = "internet";
-//const char *gprsUser = "";
-//const char *gprsPass = "";
+// Separar a inicializacao fisica do modem da conexao de dados permite
+// repetir a conexao ao APN sem reiniciar o A7670E a cada tentativa.
+static bool modemHardwareInicializado = false;
+static bool mqttConfigurado = false;
 
-const char *apn = "zap.vivo.com.br";
-const char *simUser = "vivo";
-const char *simPass = "vivo";
-
-bool networkSuccess = false;
-
-// #define DUMP_AT_COMMANDS // descomentar apara debugar a conexão AT
-//#define AUTO_BAUD_RATE true// descomentar para usar o auto baud
-
-#ifdef DUMP_AT_COMMANDS
-#include <StreamDebugger.h>
-StreamDebugger debugger(SerialAT, Serial);
-TinyGsm modem(debugger);
-#else
-TinyGsm modem(SerialAT);  // objeto modem
-#endif
-
-// Objetos de comunicação
-TinyGsmClientSecure client(modem, 0);
-PubSubClient mqtt(client);
-
-static uint16_t keepAlive = 60;
-static uint16_t timeout = 30;
-
-// Nome do arquivo do certificado armazenado no modem
-const char *NOME_CA_CERT = "AmazonRootCA1.pem";
-const char *NOME_CLIENT_CERT = "certificate.pem";
-const char *NOME_CLIENT_KEY = "private-key.pem";
-
-bool setupNetwork() {
-
-  Serial.println("Aguardando registro na rede celular...");
-
-  // Verifica se o modem já está registrado.
+static bool conectarDadosCelulares() {
   if (!modem.isNetworkConnected()) {
-
+    SerialMon.println("Aguardando registro na rede celular...");
     if (!modem.waitForNetwork(300000L, true)) {
-      Serial.println("Falha ao registrar na rede celular!");
+      SerialMon.println("Falha ao registrar na rede celular!");
       return false;
     }
   }
 
-  Serial.println("Registro na rede celular: OK");
-
-  // Verifica a conexão de dados.
   if (!modem.isGprsConnected()) {
+    SerialMon.print("Conectando ao APN: ");
+    SerialMon.println(APN);
 
-    Serial.print("Conectando ao APN: ");
-    Serial.println(apn);
-
-    if (!modem.gprsConnect(apn, simUser, simPass)) {
-      Serial.println("Falha ao conectar ao APN!");
+    if (!modem.gprsConnect(APN, GPRS_USER, GPRS_PASS)) {
+      SerialMon.println("Falha ao conectar ao APN!");
       return false;
     }
   }
 
-  // Confirma se a conexão de dados realmente foi estabelecida.
   if (!modem.isGprsConnected()) {
-    Serial.println("Conexao de dados nao estabelecida!");
+    SerialMon.println("Conexao de dados celulares nao confirmada!");
     return false;
   }
 
-  Serial.println("Conexao de dados celulares: OK");
-
+  SerialMon.println("Conexao de dados celulares: OK");
   return true;
 }
 
-// Inicializar Modem e GPRS
 bool inicializarModem() {
-  // setar reset, enabele, power pins
-  delay(100);
+  if (!modemHardwareInicializado) {
+    SerialMon.println("Inicializando LilyGO T-A7670E R2...");
 
-  /* Set Power control pin output
-    * * @note  Known issues, ESP32 (V1.2) version of T-A7670, T-A7608,
-    * when using battery power supply mode, BOARD_POWERON_PIN (IO12) must be set to high level after esp32 starts, otherwise a reset will occur.
-    * */
-  pinMode(MODEM_POWER_ON_PIN, OUTPUT);
-  digitalWrite(MODEM_POWER_ON_PIN, HIGH);
-  delay(500);
+    // IO12 deve permanecer HIGH para manter a alimentacao da placa.
+    pinMode(MODEM_POWER_ON_PIN, OUTPUT);
+    digitalWrite(MODEM_POWER_ON_PIN, HIGH);
+    delay(500);
 
-  // Set modem reset pin ,reset modem
-  pinMode(MODEM_RESET_PIN, OUTPUT);
-  digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
-  delay(100);
-  digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL);
-  delay(200);
-  digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
-  delay(200);
+    // Reset do A7670E.
+    pinMode(MODEM_RESET_PIN, OUTPUT);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+    delay(100);
+    digitalWrite(MODEM_RESET_PIN, MODEM_RESET_LEVEL);
+    delay(200);
+    digitalWrite(MODEM_RESET_PIN, !MODEM_RESET_LEVEL);
+    delay(200);
 
-  // pulso de Power Key para iniciar o A7670E
-  pinMode(MODEM_PWRKEY_PIN, OUTPUT);
-  digitalWrite(MODEM_PWRKEY_PIN, LOW);
-  delay(100);
-  digitalWrite(MODEM_PWRKEY_PIN, HIGH);
-  delay(1500);
-  digitalWrite(MODEM_PWRKEY_PIN, LOW);
+    // Pulso PWRKEY para ligar o modem.
+    pinMode(MODEM_PWRKEY_PIN, OUTPUT);
+    digitalWrite(MODEM_PWRKEY_PIN, LOW);
+    delay(100);
+    digitalWrite(MODEM_PWRKEY_PIN, HIGH);
+    delay(1500);
+    digitalWrite(MODEM_PWRKEY_PIN, LOW);
 
-  Serial.println("Aguardando...");
+    // Buffer recomendado para recepcao UART no ESP32 com TinyGSM2.
+    SerialAT.setRxBufferSize(4096);
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);
+    delay(6000);
 
-  //#if AUTO_BAUD_RATE
-  //TinyGsmAutoBaud(SerialAT, 9600, 115200);
-  //#else
-  SerialAT.setRxBufferSize(4096);
-  SerialAT.begin(115200, SERIAL_8N1, MODEM_RX_PIN, MODEM_TX_PIN);  // modem baud rate fixo
-                                                                   //#endif
-
-  Serial.println("Start Modem...");
-  delay(6000);
-
-  Serial.println("Inicializando Modem...");
-  if (!modem.init()) {
-    Serial.println("ERRO: falha na inicializacao do modem.");
-    // TRATAR AQUI !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    return false;
-  }
-
-  Serial.println("Configurando respostas textuais...");
-
-  SerialAT.println("ATV1");
-
-  delay(200);
-
-  while (SerialAT.available()) {
-    SerialMon.write(SerialAT.read());
-  }
-
-  Serial.println("Respostas textuais configuradas!");
-
-  String nome = modem.getModemName();
-  Serial.print("Modem Name:");
-  Serial.println(nome);
-  delay(500);
-  String modem_info = modem.getModemInfo();
-  Serial.print("Modem Info: ");
-  Serial.println(modem_info);
-
-  if (GSM_PIN[0] != '\0' && modem.getSimStatus() != 3) {
-    modem.simUnlock(GSM_PIN);
-  }
-
-  Serial.println("Modem pronto!");
-
-  if (!networkSuccess) {
-    Serial.println("Network setup failed, re-trying...");
-    networkSuccess = setupNetwork();
-    if (!networkSuccess) {
-      Serial.println(" ...failed to set up network!");
-      delay(15000L);
+    SerialMon.println("Inicializando modem...");
+    if (!modem.init()) {
+      SerialMon.println("Falha ao inicializar o modem!");
       return false;
     }
-    Serial.println(" ...success");
-  }
 
-  return true;
-}
-
-// Função auxiliar para enviar comandos AT
-bool enviarComandoAT(const char *comando, uint32_t timeoutMs) {
-
-  while (SerialAT.available()) {
-    SerialAT.read();
-  }
-
-  Serial.print("\n>> ");
-  Serial.println(comando);
-
-  SerialAT.println(comando);
-
-  String resposta;
-  uint32_t inicio = millis();
-
-  while (millis() - inicio < timeoutMs) {
-
+    // Garante codigos de resposta textuais.
+    SerialAT.println("ATV1");
+    delay(200);
     while (SerialAT.available()) {
-      resposta += (char)SerialAT.read();
+      SerialMon.write(SerialAT.read());
     }
 
-    if (resposta.indexOf("ERROR") != -1) {
-      Serial.println(resposta);
-      return false;
+    SerialMon.print("Modem: ");
+    SerialMon.println(modem.getModemName());
+
+    if (SIM_PIN[0] != '\0' && modem.getSimStatus() != SIM_READY) {
+      modem.simUnlock(SIM_PIN);
+      if (modem.getSimStatus() != SIM_READY) {
+        SerialMon.println("Falha ao desbloquear o SIM!");
+        return false;
+      }
     }
 
-    if (resposta.indexOf("OK") != -1) {
-      Serial.println(resposta);
-      return true;
-    }
-
-    delay(10);
+    modemHardwareInicializado = true;
+    SerialMon.println("Modem inicializado.");
   }
 
-  Serial.println("Timeout!");
-  Serial.println(resposta);
-
-  return false;
+  // Se o registro ou o APN falhar, uma nova chamada desta funcao
+  // tenta novamente sem executar a sequencia fisica de power/reset.
+  return conectarDadosCelulares();
 }
-
-bool moverCertificado(const char *nomeArquivo) {
-
-  char comando[128];
-
-  snprintf(
-    comando,
-    sizeof(comando),
-    "AT+CCERTMOVE=\"%s\"",
-    nomeArquivo);
-
-  Serial.print("Convertendo certificado: ");
-  Serial.println(nomeArquivo);
-
-  return enviarComandoAT(comando, 120000UL);
-}
-
-// Função para inicar os servicos de SSL para rodar antes da conexão TLS
-bool iniciarServicoSSL() {
-
-  Serial.println("Iniciando servico SSL...");
-
-  while (SerialAT.available()) {
-    SerialAT.read();
-  }
-
-  SerialAT.println("AT+CCHSTART");
-
-  String resposta;
-  uint32_t inicio = millis();
-
-  while (millis() - inicio < 15000UL) {
-
-    while (SerialAT.available()) {
-      resposta += (char)SerialAT.read();
-    }
-
-    if (resposta.indexOf("+CCHSTART: 0") != -1) {
-      Serial.println("Servico SSL iniciado!");
-      return true;
-    }
-
-    if (resposta.indexOf("ERROR") != -1) {
-      Serial.println(resposta);
-      return false;
-    }
-
-    delay(10);
-  }
-
-  Serial.println("Falha ao iniciar servico SSL!");
-  Serial.println(resposta);
-
-  return false;
-}
-
-// Função para tentar encerrar uma sessão SSL que eventualmente tenha ficado ativa
-bool pararServicoSSL() {
-
-  Serial.println("Encerrando servico SSL anterior...");
-
-  while (SerialAT.available()) {
-    SerialAT.read();
-  }
-
-  SerialAT.println("AT+CCHSTOP");
-
-  String resposta;
-  uint32_t inicio = millis();
-
-  while (millis() - inicio < 10000UL) {
-
-    while (SerialAT.available()) {
-      resposta += (char)SerialAT.read();
-    }
-
-    if (resposta.indexOf("+CCHSTOP: 0") != -1) {
-      Serial.println("Servico SSL anterior encerrado!");
-      return true;
-    }
-
-    if (resposta.indexOf("ERROR") != -1) {
-      Serial.println("Servico SSL nao estava ativo ou nao foi encerrado:");
-      Serial.println(resposta);
-      return false;
-    }
-
-    delay(10);
-  }
-
-  Serial.println("Timeout ao encerrar servico SSL!");
-  Serial.println(resposta);
-
-  return false;
-}
-
-
 
 bool configurarMQTT() {
-
-  Serial.println("\nConfigurando AWS IoT Core...");
-
-  // ==========================================================
-  // ASSOCIACAO DA ROOT CA
-  // ==========================================================
-
-  if (!client.setCertificate(NOME_CA_CERT)) {
-
-    Serial.println("Falha ao associar Root CA!");
+  if (!modemHardwareInicializado || !modem.isGprsConnected()) {
+    SerialMon.println("Inicialize o modem e conecte os dados antes do MQTT.");
     return false;
   }
 
-  // ==========================================================
-  // ASSOCIACAO DO CERTIFICADO E CHAVE DO CLIENTE
-  // ==========================================================
+  SerialMon.println("Associando identidade X.509 ao cliente TLS...");
 
-  if (!client.setClientCredentials(
-        NOME_CLIENT_CERT,
-        NOME_CLIENT_KEY)) {
-
-    Serial.println("Falha ao associar credenciais do cliente!");
+  // Os tres arquivos ja devem estar gravados no armazenamento de
+  // certificados do A7670E pelo sketch AWS_CertificateProvisioner.
+  // A TinyGSM2-PatoAJato associa os arquivos e configura authmode=2
+  // (autenticacao mutua) ao abrir o socket seguro.
+  if (!secureClient.setCertificate(NOME_CA_CERT)) {
+    SerialMon.println("Falha ao associar Amazon Root CA 1!");
     return false;
   }
 
-  // ==========================================================
-  // CONFIGURACAO MQTT
-  // ==========================================================
-
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-
-  mqtt.setKeepAlive(keepAlive);
-  mqtt.setSocketTimeout(timeout);
-
-  if (!mqtt.setBufferSize(256)) {
-
-    Serial.println("Falha ao configurar buffer MQTT!");
+  if (!secureClient.setClientCredentials(NOME_CLIENT_CERT, NOME_CLIENT_KEY)) {
+    SerialMon.println("Falha ao associar certificado/chave do dispositivo!");
     return false;
   }
 
-  Serial.println("Configuracao MQTT/AWS concluida!");
+  mqtt.setServer(AWS_IOT_ENDPOINT, AWS_IOT_PORT);
+  mqtt.setKeepAlive(MQTT_KEEP_ALIVE_SECONDS);
+  mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_SECONDS);
 
+  if (!mqtt.setBufferSize(MQTT_BUFFER_SIZE)) {
+    SerialMon.println("Falha ao configurar buffer MQTT!");
+    return false;
+  }
+
+  mqttConfigurado = true;
+  SerialMon.println("Cliente AWS IoT configurado.");
   return true;
 }
 
-
-
-
-// Realiza a conexão MQTT
 bool conectarMQTT() {
-
   if (mqtt.connected()) {
     return true;
   }
 
-  // Verifica registro na rede celular.
-  if (!modem.isNetworkConnected()) {
-
-    if (!modem.waitForNetwork(60000L)) {
-      Serial.println("Falha ao registrar na rede!");
-      return false;
-    }
-  }
-
-  // Verifica conexao de dados.
-  if (!modem.isGprsConnected()) {
-
-    if (!modem.gprsConnect(apn, simUser, simPass)) {
-      Serial.println("Falha ao reconectar dados celulares!");
-      return false;
-    }
-  }
-
-  // Conexao MQTT usando autenticacao X.509.
-  Serial.println("Conectando ao AWS IoT Core...");
-
-  if (!mqtt.connect(MQTT_CLIENT_ID)) {
-
-    Serial.println("Falha ao conectar ao AWS IoT Core!");
-
-    Serial.print("MQTT state: ");
-    Serial.println(mqtt.state());
-
+  if (!mqttConfigurado) {
+    SerialMon.println("Execute configurarMQTT() antes de conectar.");
     return false;
   }
 
-  Serial.println("Conectado ao AWS IoT Core!");
+  if (!conectarDadosCelulares()) {
+    return false;
+  }
 
+  SerialMon.print("Conectando ao AWS IoT Core: ");
+  SerialMon.println(AWS_IOT_ENDPOINT);
+
+  // AWS IoT Core usa autenticacao X.509; nao enviar usuario/senha MQTT.
+  if (!mqtt.connect(AWS_IOT_THING_NAME)) {
+    SerialMon.print("Falha MQTT. Estado PubSubClient: ");
+    SerialMon.println(mqtt.state());
+    return false;
+  }
+
+  SerialMon.println("Conectado ao AWS IoT Core!");
+  Serial.print("[MQTT] Publicando em: ");
+  Serial.println(MQTT_TOPIC_TELEMETRIA_AWS);
   return true;
 }
 
-
-// Publica um binário via MQTT -> espectificar conteúdoo e tamanho do binaŕio
 bool mqttConectado() {
-
   return mqtt.connected();
 }
 
-bool publicarMQTTBinario(
-  const uint8_t *payload,
-  uint32_t tamanho) {
-
-  if (payload == NULL || tamanho == 0) {
+bool publicarMQTTBinario(const uint8_t *payload, size_t tamanho) {
+  if (payload == nullptr || tamanho == 0 || tamanho > UINT_MAX) {
     return false;
   }
 
@@ -433,39 +212,25 @@ bool publicarMQTTBinario(
     return false;
   }
 
-  return mqtt.publish(MQTT_TOPIC_TELEMETRIA_AWS, payload, (unsigned int)tamanho, false);
+  return mqtt.publish(
+    MQTT_TOPIC_TELEMETRIA_AWS,
+    payload,
+    static_cast<unsigned int>(tamanho),
+    false);
 }
 
 bool processarMQTT() {
-
   if (!mqtt.connected()) {
     return false;
   }
 
-  if (!mqtt.loop()) {
-    return false;
-  }
-
+  // Deve ser chamada frequentemente pela task MQTT_TX.
+  mqtt.loop();
   return mqtt.connected();
 }
 
-/*
-// PUBLICACAO DE TESTE
-bool publicarTesteMQTT() {
-
-  const char mensagem[] = "PATO_A_JATO_MQTT_TESTE_NOVO";
-
-  Serial.println("\nPublicando mensagem de teste...");
-
-  bool enviado = mqtt.publish(MQTT_TOPIC_TELEMETRIA, mensagem);
-
-  if (!enviado) {
-    Serial.println("ERRO: falha ao publicar");
-    return false;
+void desconectarMQTT() {
+  if (mqtt.connected()) {
+    mqtt.disconnect();
   }
-
-  Serial.println("Mensagem enviada ao broker!");
-
-  return true;
 }
-*/

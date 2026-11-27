@@ -2,24 +2,29 @@
 #ifndef MQTT_CONFIG_H
 #define MQTT_CONFIG_H
 
+#include <Arduino.h>
+#include <stddef.h>
 #include <stdint.h>
 
-// Inicializacao do modem e conexao GPRS
+// Inicializa o A7670E, registra na rede celular e conecta ao APN.
 bool inicializarModem();
 
-// Configuracao TLS e MQTT, executada uma vez
+// Associa os certificados ja provisionados e configura o PubSubClient.
 bool configurarMQTT();
 
-// Conexao ou reconexao MQTT
+// Estabelece ou recupera a conexao com o AWS IoT Core.
 bool conectarMQTT();
 
-// Verifica o estado da conexao
+// Informa se o cliente MQTT esta conectado.
 bool mqttConectado();
 
-// Publicacao de um buffer binario
-bool publicarMQTTBinario(const uint8_t *payload, uint32_t tamanho);
+// Publica um payload binario (por exemplo, um pacote PJ v2).
+bool publicarMQTTBinario(const uint8_t *payload, size_t tamanho);
 
-// Processa eventos e mantem a conexao ativa
+// Deve ser chamada frequentemente pela unica task responsavel pelo MQTT.
 bool processarMQTT();
+
+// Encerra a conexao MQTT, se estiver ativa.
+void desconectarMQTT();
 
 #endif

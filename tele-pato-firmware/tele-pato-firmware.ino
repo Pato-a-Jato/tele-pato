@@ -64,12 +64,11 @@ CAN_FSM estadoCAN = BUSCANDO_PACOTE_2;
 volatile uint32_t canMarcadoresP2 = 0;
 volatile uint32_t canFalhasFila = 0;
 
-
 // PROTOCOLO PJ V2
 uint32_t bootId = 0;
 uint32_t sequenceNumber = 0;
 
-#define MQTT_PUBLISH_INTERVAL_MS 250
+#define MQTT_PUBLISH_INTERVAL_MS 5000
 
 typedef struct {
   uint8_t dados[PJ_V2_PACKET_SIZE];
@@ -231,7 +230,7 @@ void processarFrameCAN(const uint8_t *buf) {
   }
 
   switch (estadoCAN) {
-    // procura o pacote 2
+      // procura o pacote 2
 
     case BUSCANDO_PACOTE_2:
 
@@ -253,7 +252,7 @@ void processarFrameCAN(const uint8_t *buf) {
 
       break;
 
-    
+
     // recebe o pacote 3
     case AGUARDANDO_PACOTE_3:
 
@@ -303,7 +302,7 @@ void processarFrameCAN(const uint8_t *buf) {
       } else {
         // armazena o pacote 4
         memcpy(pTelemetria + CAN_FRAME_SIZE * 3, buf, CAN_FRAME_SIZE);
-        
+
         // valida o marcador final 1E FC
         if (buf[6] == 0x1E && buf[7] == 0xFC) {
           canAmostrasValidas++;
@@ -342,7 +341,7 @@ void tarefaPublicacaoMQTT(void *pvParameters) {
   const TickType_t intervaloPublicacao = pdMS_TO_TICKS(MQTT_PUBLISH_INTERVAL_MS);
 
   // intervalos entre tentativas de reconexao
-  const uint32_t intervalosReconexao[] = {1000, 2000, 5000, 10000, 30000};
+  const uint32_t intervalosReconexao[] = { 1000, 2000, 5000, 10000, 30000 };
 
   const uint8_t totalIntervalos = sizeof(intervalosReconexao) / sizeof(intervalosReconexao[0]);
 
@@ -380,7 +379,8 @@ void tarefaPublicacaoMQTT(void *pvParameters) {
 
       if (conectarMQTT()) {
 
-        Serial.println("[MQTT] Conexao estabelecida.");
+        Serial.print("[MQTT] Intervalo de publicacao (ms): ");
+        Serial.println(MQTT_PUBLISH_INTERVAL_MS);
 
         conexaoAnterior = true;
 
