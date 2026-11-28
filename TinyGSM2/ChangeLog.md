@@ -1,0 +1,185 @@
+# ChangeLog
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
+and its stricter, better defined, brother [Common Changelog](https://common-changelog.org/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+***
+
+
+## [Unreleased]
+****
+### Changed
+
+### Added
+
+### Removed
+
+### Fixed
+
+***
+
+
+## [v1.0.4]
+
+Checked against arduino-esp32 4.0.0 (ESP-IDF 6.1.1, GCC 15.2), ESP-IDF 6.1 and the PlatformIO `espressif32` 8.0.0 platform (arduino-esp32 3.3.12).
+No API changes; existing sketches build unchanged.
+
+### Changed
+- README: arduino-esp32 4.x and ESP-IDF 6.x support, PlatformIO `espressif32` 8.x (which ships arduino-esp32 3.3.12 instead of 2.0.x, and supports `framework = arduino, espidf`), and `idf.py add-dependency "espressif/arduino-esp32^4.0.0"`.
+- On ESP32, `TINY_GSM_YIELD_MS` is converted to FreeRTOS ticks and always waits at least one tick. With a tick rate below 1000 Hz (Arduino as an ESP-IDF component built with `ARDUINO_SKIP_TICK_CHECK`), a short `TINY_GSM_YIELD_MS` used to become `vTaskDelay(0)`, which can trip the task watchdog.
+
+### Added
+- `extras/tests/idf_flags_check.sh`: compiles every driver the way ESP-IDF 6.x compiles a component (`-std=gnu++26 -Wall -Wextra -Werror`) against an installed arduino-esp32 core.
+- CI: that check for ESP32-S3 and ESP32-C3 (with and without `TINY_GSM_USE_MUTEX` and `TINY_GSM_DEBUG`), and builds with arduino-esp32 3.3.12 besides the latest core (4.x) and 2.0.17.
+
+### Fixed
+- `TINY_GSM_DEBUG` builds no longer fail as an ESP-IDF component with GCC 15: reading a verbose error (`+CME ERROR:`) used `strnlen(AT_NL, 3)`, which GCC 15 reports as `-Wstringop-overread` for modems whose `AT_NL` is `"\r"` (Digi XBee). ESP-IDF builds treat that warning as an error.
+- Unused-parameter warnings (`-Wextra`) in the SIM900 build of the SIM800 driver and in the u-blox SARA-R5 `gprsConnect()` (the SARA-R5 ignores the user name and password).
+
+***
+
+
+## [v1.0.3]
+
+### Changed
+- README: install from the PlatformIO registry (`longtrinh/TinyGSM2@^1.0.3`), list the tested companion libraries (PubSubClient 2.8 / PubSubClient3, ESP_SSLClient 2.2.2 / 3.1.3) and the extended verification.
+- `library.json`: added the `license` field (LGPL-3.0).
+- `TINY_GSM_RX_BUFFER` defaults to 64 bytes again on ESP32 too, as in TinyGSM. Sketches that don't enlarge the UART buffer (default 256 bytes) are no longer sent 1–2 kB per read. Define `TINY_GSM_RX_BUFFER 1024` together with `SerialAT.setRxBufferSize(4096)` for more throughput.
+
+### Added
+- `TINY_GSM_SEND_MAX_SIZE` (default 1024): largest chunk handed to the modem per send command.
+- `TINY_GSM_MODEM_HAS_USSD`: defined when `sendUSSD()` is available (not on u-blox SARA-R4/N4 and Digi XBee).
+- Examples: HttpsClient stops with a clear `#error` on modems without SSL/TLS. BlynkClient, Industruino and Hologram_Dash stop with one on WiFi-only modems (ESP8266/ESP32 AT firmware). They used to fail with an unrelated compiler error.
+
+### Fixed
+- SIM900: `TINY_GSM_MODEM_HAS_SSL` is no longer defined (the SIM900 has no SSL client). Sketches and examples that use `TinyGsmClientSecure` only when SSL is available (WebClient, Diagnostics, AllFunctions, test_build) now compile for the SIM900 and use a plain TCP client.
+- AllFunctions example: the USSD test is only built for modems that support USSD, so the example compiles for the SARA-R4 and XBee again.
+- SIM800_SslSetCert example: uses SoftwareSerial on the Uno/Nano (ATmega328P), like the other examples, instead of the missing `Serial1`.
+- `GsmClient::write()` sets the Arduino write error (`getWriteError()`) when the modem refuses data, and every driver's `connect()` clears it. ESP_SSLClient (2.2.2 and 3.1.3) uses it to tell a failed send from a closed socket; before, a refused send ended the TLS session without reporting an error.
+- `GsmClient::write()` splits data into chunks of at most `TINY_GSM_SEND_MAX_SIZE` bytes and returns the total sent. Before, one `write()` became one modem send command, which the modem rejects above its limit (e.g. SIM7600 1500, SIM800/BG96 1460, u-blox 1024 bytes). PubSubClient (legacy 2.8 and PubSubClient3) writes a whole MQTT packet at once, and ESP_SSLClient a whole TLS record (up to its buffer size, e.g. 1536 bytes). Publishing a message, or sending a TLS record, larger than that limit failed. Verified with both PubSubClient versions against a simulated modem: 1.8 kB publishes and 3 kB streamed publishes now arrive byte-exact.
+- SIM7600, SIM5360, SIM800, SIM7000: socket reads are limited to the modem's per-request maximum for `AT+CIPRXGET` (750/1500 bytes, or 730/1460 on SIM800/SIM7000, in HEX/text mode). With a larger `TINY_GSM_RX_BUFFER` (e.g. TinyGSM2's earlier 1024-byte ESP32 default), HEX-mode reads (`TINY_GSM_USE_HEX`) were rejected with ERROR and no data was received.
+- `localIP()` returned 0.0.0.0 on modems that answer with a prefix (e.g. SIM7600 / SIM5360 `+IPADDR: 10.1.2.3`); `TinyGsmIpFromString()` again ignores text before the address, as in TinyGSM. It also reads `<cid>,<ip>` correctly (TinyGSM turned `1,10.1.2.3` into `110.1.2.3`), and no longer mistakes host names like `abc123.example.com` for IP addresses.
+
+***
+
+
+## [v1.0.2]
+
+### Changed
+- README: new "PlatformIO and ESP-IDF" section (VS Code + PlatformIO, the official vs. pioarduino platforms, ESP-IDF with Arduino as a component). The install instructions now start with the Arduino Library Manager.
+
+### Fixed
+- SARA-R5: when searching the PDP contexts, the APN is only compared if `sscanf()` actually parsed it. Before, an unparsable line compared an uninitialized buffer. This also removes the `scanned set but not used` warning, which is an error with `-Werror=all` (GCC 15 / ESP-IDF 6.1).
+
+***
+
+
+## [v1.0.1]
+
+### Changed
+- `library.properties` / `library.json`: the author and maintainer are now Long Trinh, so Arduino Library Manager shows "TinyGSM2 by Long Trinh". The original author, Volodymyr Shymanskyy, is still credited in the library description, `library.json`, the README and the source file headers.
+
+### Removed
+- The PlatformIO CI workflow (`.github/workflows/build_examples_platformio.yaml`) and its README badge.
+
+***
+
+
+## [v1.0.0]
+TinyGSM2: fork of TinyGSM 0.12.0 (https://github.com/vshymanskyy/TinyGSM), published at https://github.com/longtrinh/TinyGSM2.
+
+### Changed
+- Library renamed to `TinyGSM2` in `library.properties` and `library.json`; the headers (`TinyGsmClient.h`, ...) are unchanged.
+- First TinyGSM2 release: version 1.0.0, with a new README for the fork (the changes were made by Claude, Anthropic's AI coding agent, under the maintainer's direction).
+- Supports arduino-esp32 3.x and 2.x (e.g. PlatformIO's `espressif32` platform). Features that need core 3.x (dual-stack `IPAddress`, `Stream::getTimeout()`) are enabled only when `ESP_ARDUINO_VERSION_MAJOR >= 3`.
+- The tool sketches moved into the library's examples (`examples/tools/AT_Debug`, `AT_Spy`, `Diagnostics`, `FactoryReset`), so they appear under File → Examples → TinyGSM2 → tools. The compile-test sketch moved to `extras/test_build`. This layout is required by the Arduino Library Manager (Arduino Lint rule LD003).
+- On ESP32, `TINY_GSM_YIELD()` now blocks for one FreeRTOS tick (`vTaskDelay(1)`) instead of `delay(0)`, so long waits let the IDLE task run and no longer trip the task watchdog (which reboots by default on arduino-esp32 3.x).
+- Yields happen only while waiting for the modem, never per received byte: removed the per-byte yield in `waitResponse()`, and `GsmClient::write()`/`available()`/`read()` (and the XBee client) only yield when there is nothing to do.
+- On ESP32, `TINY_GSM_RX_BUFFER` defaults to 1024 bytes (it is still 64 elsewhere).
+- Socket payloads are moved from the modem stream into the client FIFO in chunks with `readBytes()` (new `moveCharsFromStreamToFifo()`), instead of one `read()` per byte.
+- `TinyGsmAutoBaud()` keeps the pins and buffer sizes of an ESP32 `HardwareSerial` that is already running (it uses `updateBaudRate()`). On arduino-esp32 3.x it probes each rate with a 100 ms timeout.
+- `TinyGsmIpFromString()` takes the first address of a dual-stack answer. On arduino-esp32 3.x it also parses IPv6 addresses, and connecting to an IPv6 `IPAddress` passes the IPv6 string to the modem instead of a garbled IPv4 address.
+- A7672X: removed the forced Google DNS from `gprsConnect()`; define `TINY_GSM_A7672X_DNS` to override the carrier DNS.
+- A7672X: the SSL version is no longer forced to TLS 1.2 (the value meant something else on TLS 1.3 firmware); define `TINY_GSM_A7672X_SSL_VERSION` to force one.
+- A7672X: `getRegistrationStatus()` checks CEREG, then CGREG, then CREG (LTE Cat-1 modules register on EPS).
+- CI (PlatformIO workflow):
+  - Builds every example/modem combination even when one fails (`fail-fast: false`).
+  - Runs only on pushes to `main` and on pull requests.
+  - Installs `intelhex` for the ESP32 bootloader step.
+  - Uninstalls `TinyGSM2` after each build.
+  - Uses `actions/setup-python@v7`.
+
+### Added
+- Optional `TINY_GSM_USE_MUTEX` (ESP32) to serialize modem access from several FreeRTOS tasks, and `TINY_GSM_LOCK(modem)` to hold the lock across several calls.
+- `TinyGsmSerialSetBaud()` helper.
+- `TinyGSM2.h` primary header, named after the library (it includes `TinyGsmClient.h`).
+- A7672X: `gprsConnect()` uses the APN user name and password (`AT+CGAUTH`).
+- A7672X: secure clients verify the server (`authmode` 1) when a CA certificate has been set with `setCertificate()`.
+
+### Removed
+- The upstream TinyGSM README (replaced by a TinyGSM2 README).
+- A7672X: the hard-coded Google DNS (`AT+CDNSCFG="8.8.8.8","8.8.4.4"`) in `gprsConnect()`.
+- A7672X: the hard-coded `sslversion` 3 (TLS 1.2) in secure `connect()`.
+
+### Fixed
+- Clients unregister themselves from the modem when destroyed, so URCs no longer write into a destroyed (e.g. local) `TinyGsmClient`.
+- Default-constructed clients initialize all members; calling `connected()`, `available()`, `stop()` etc. before `init()` no longer dereferences a garbage pointer.
+- A read time-out in the socket read loops no longer stores `0xFF` (`-1`) bytes into the received data.
+- `waitResponse()` no longer drops received bytes >= 0x80.
+- `streamGetLength()` no longer overflows when more than 127 bytes are buffered.
+- With `TINY_GSM_DEBUG`, reading a `+CME ERROR` / `+CMS ERROR` detail no longer waits for the full stream time-out.
+- `GsmClient::peek()` returns -1 when there is no data instead of a stale byte, and pulls data waiting in the modem's buffer first.
+- `GsmClient::read()` for modems without an internal buffer returns as soon as some data was read instead of waiting for the full time-out.
+- `write()` no longer returns a huge `size_t` when the driver reports an error.
+- A7672X: `init()` sent `ATV0` (numeric result codes) in non-debug builds, so the modem never answered "OK"; it now uses `AT+CMEE` like the other drivers and forces `ATV1`.
+- A7672X: TCP `write()` waited 10 s for `+CCHSEND` and returned 0; it now parses `+CIPSEND: <link>,<req>,<cnf>`, and splits large writes into 1500 (TCP) / 2048 (SSL) byte chunks.
+- A7672X: `AT+NETOPEN` / `AT+CCHSTART` are only sent when the service is not running, so reconnecting no longer fails with "Network is already opened".
+- A7672X: the `mux` number is used for `AT+CIPOPEN` / `AT+CCHOPEN` (it was hard-coded to 0), and SSL vs. TCP is tracked per socket instead of by one global flag.
+- A7672X: SSL reads follow the `AT+CCHRECV` response order (OK first, then one or more DATA blocks, then the result), and the number of bytes left is queried afterwards.
+- A7672X: the `+CCHEVENT: <id>,RECV EVENT` URC no longer sends an AT command from inside `waitResponse()`.
+- A7672X: `getTemperature()` always returned 0.
+- A7672X: `restart()` waits for the module to reboot after `AT+CRESET`.
+- A7672X: TCP connection state is read with `AT+CIPCLOSE?`, and `+CIPEVENT`, `+CCH: CCH STOP` and late command results are handled.
+
+***
+
+
+## [v0.12.0]
+
+### Changed
+- Moved bulk of waitResponse function to modem template and gave modems handleURCs fxn
+- Moved option in waitResponse for verbose outputs.
+- setBaud now returns a bool
+- Replace new line consts with defines and renamed to AT_NL
+- Renamed all RegStatus enums to be unique
+- Replaced `NULL` with `nullptr` and replaced c-style casts.
+- Moved setCertificates function and the certificate name matrix to the SSL template.
+- Changed inputs for (unimplemented) SSL certificate functions.
+- All modems will now return the pre-defined manufacturer and model in the name if the function to get the internal name fails.
+- Cleaned up code for getting modem names.
+- Made battery return types signed.
+
+### Added
+- Added support for SSL for the Quentcel BG95 and BG96 from [Aurelien BOUIN](https://github.com/aurelihein) and [George O'Connor](https://github.com/georgeman93)
+- Added support for UBLOX SARA-R5 from [Sebastian Bergner](https://github.com/sebastianbergner)
+- Added support for SIMCOM A7672X from [Giovanni de Rosso Unruh](https://github.com/giovannirosso)
+- Added SIM5320 GPS location from [Bengarman](https://github.com/Bengarman)
+- Added functions `getModemSerialNumber`, `getModemModel`, and `getModemRevision`.
+- Added deep debugging option
+- Added documentation to the FIFO class
+
+### Removed
+- Removed non-functional factory reset from SIM70xx series
+
+### Fixed
+- Removed extra wait on SIM7000 from [Mikael Fredriksson](https://github.com/Gelemikke)
+- Fix status returns on ESP8266/ESP32 AT commands
+- Fix length of HEX for Sequans Monarch
+- Fix SIM7600 password then user when cid is set from [github0013](https://github.com/github0013)
+- Fix cardinal points in location by gps for SIM7600 from [Juxn3](https://github.com/Juxn3)
+- Fix NTP server sync for SIM70xx models from [Gonzalo Brusco](https://github.com/gonzabrusco)
+- Fixed SIM70xx inheritance
+
+***
