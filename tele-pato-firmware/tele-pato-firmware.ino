@@ -39,7 +39,6 @@ MCP_CAN CAN0(SPI_CS_PIN);
 
 // AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 TaskHandle_t tarefaCANHandle = NULL;
-
 volatile uint32_t canInterrupcoes = 0;
 
 char msgString[128];
@@ -47,11 +46,11 @@ char msgString[128];
 frameTelemetria telemetria;
 uint8_t *pTelemetria = (uint8_t *)&telemetria;
 
-// Guarda o frame imediatamente anterior.
+// Guarda o frame imediatamente anterior
 uint8_t frameAnterior[CAN_FRAME_SIZE];
 bool frameAnteriorValido = false;
 
-// Maquina de estados simplificada.
+// Maquina de estados.
 enum CAN_FSM {
   BUSCANDO_PACOTE_2 = 0,
   AGUARDANDO_PACOTE_3,
@@ -60,7 +59,7 @@ enum CAN_FSM {
 
 CAN_FSM estadoCAN = BUSCANDO_PACOTE_2;
 
-// Diagnosticos adicionais.
+// Variável de debug
 volatile uint32_t canMarcadoresP2 = 0;
 volatile uint32_t canFalhasFila = 0;
 
@@ -161,11 +160,11 @@ void setup() {
     for (;;) {}
   }
 
-  // Configura a interrupcao somente depois de criar a tarefa.
+  // Configura a interrupcao somente depois de criar a tarefa
   pinMode(CAN_INT_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(CAN_INT_PIN), interrupcaoCAN, FALLING);
 
-  // Verifica se ja existe interrupcao pendente.
+  // Verifica se ja existe interrupcao pendente
   if (digitalRead(CAN_INT_PIN) == LOW) {
     xTaskNotifyGive(tarefaCANHandle);
   }
@@ -188,10 +187,10 @@ void tarefaAquisicaoCAN(void *pvParameters) {
   Serial.println("[CAN] Task de aquisicao iniciada.");
 
   for (;;) {
-    // Aguarda uma notificacao da interrupcao do MCP2515.
+    // Aguarda uma notificacao da interrupcao do MCP2515
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // Processa todos os frames disponiveis.
+    // Processa todos os frames disponiveis
     while (CAN0.checkReceive() == CAN_MSGAVAIL) {
       unsigned long rxId;
       byte len = 0;
@@ -199,13 +198,13 @@ void tarefaAquisicaoCAN(void *pvParameters) {
 
       CAN0.readMsgBuf(&rxId, &len, buf);
 
-      // Filtro do identificador da Injepro.
+      // Filtro do identificador da Injepro
       if (rxId != CAN_ID_INJEPRO) {
         canFramesOutrosIDs++;
         continue;
       }
 
-      // Verifica o tamanho do frame.
+      // Verifica o tamanho do frame
       if (len != CAN_FRAME_SIZE) {
         canFramesDLCInvalido++;
         continue;
@@ -220,7 +219,6 @@ void tarefaAquisicaoCAN(void *pvParameters) {
 }
 
 void processarFrameCAN(const uint8_t *buf) {
-
   // Identifica o pacote 2 pelo marcador 1B 00
   bool ehPacote2 =
     (buf[4] == 0x1B && buf[5] == 0x00);
@@ -230,8 +228,8 @@ void processarFrameCAN(const uint8_t *buf) {
   }
 
   switch (estadoCAN) {
-      // procura o pacote 2
 
+      // procura o pacote 2
     case BUSCANDO_PACOTE_2:
 
       if (ehPacote2) {
@@ -285,7 +283,7 @@ void processarFrameCAN(const uint8_t *buf) {
       if (ehPacote2) {
 
         // captura anterior incompleta
-        // reinicia a partir do novo pacote 2.
+        // reinicia a partir do novo pacote 2
         canAmostrasRejeitadas++;
 
         if (frameAnteriorValido) {
@@ -341,7 +339,7 @@ void tarefaPublicacaoMQTT(void *pvParameters) {
   const TickType_t intervaloPublicacao = pdMS_TO_TICKS(MQTT_PUBLISH_INTERVAL_MS);
 
   // intervalos entre tentativas de reconexao
-  const uint32_t intervalosReconexao[] = { 1000, 2000, 5000, 10000, 30000 };
+  const uint32_t intervalosReconexao[] = {1000, 2000, 5000, 10000, 30000};
 
   const uint8_t totalIntervalos = sizeof(intervalosReconexao) / sizeof(intervalosReconexao[0]);
 
@@ -366,8 +364,7 @@ void tarefaPublicacaoMQTT(void *pvParameters) {
       // primeira tentativa apos a desconexao: 1 segundo
       indiceReconexao = 1;
 
-      proximaTentativaMs =
-        millis() + intervalosReconexao[0];
+      proximaTentativaMs = millis() + intervalosReconexao[0];
     }
 
     // 3. TENTA CONECTAR OU RECONECTAR
@@ -460,7 +457,8 @@ void gerarPacotePJv2() {
   }
 }
 
-// Função para debug
+// ===== FUNÇÕES PRA DEBUG DOS FRAMES CAN =====
+// Traduz e imprime os dados da CAN
 void mostraTele() {
   // __builtin_bswap16: little endian -> big endian da injepro
   uint16_t rpm = __builtin_bswap16(telemetria.rpm);
@@ -486,7 +484,7 @@ void mostraTele() {
   Serial.printf("RPM: %u | TPS: %5.1f%% | TMot: %5.1f C | TAr: %5.1f C\n", rpm, tps, tMotor, tAr);
 }
 
-// Função para debug
+// Imprime o frame CAN inteiro como chega da Injeção
 void mostraFrameCru(int frame, long unsigned int rxId, byte len, byte *buf) {
   sprintf(msgString, "FRAME %d => Standart ID: 0x%.3lX  DLC: %1d  Data:", frame, rxId, len);
   Serial.printf(msgString);

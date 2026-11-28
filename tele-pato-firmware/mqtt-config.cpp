@@ -142,8 +142,8 @@ bool configurarMQTT() {
   SerialMon.println("Associando identidade X.509 ao cliente TLS...");
 
   // Os tres arquivos ja devem estar gravados no armazenamento de
-  // certificados do A7670E pelo sketch AWS_CertificateProvisioner.
-  // A TinyGSM2-PatoAJato associa os arquivos e configura authmode=2
+  // certificados do A7670E
+  // A TinyGSM2associa os arquivos e configura authmode=2
   // (autenticacao mutua) ao abrir o socket seguro.
   if (!secureClient.setCertificate(NOME_CA_CERT)) {
     SerialMon.println("Falha ao associar Amazon Root CA 1!");
